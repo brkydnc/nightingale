@@ -1,62 +1,61 @@
-use mavlink::MavlinkVersion;
-use nightingale::TcpConnection;
+use mavlink::{MessageData, MavlinkVersion, ardupilotmega::MavMessage as ArdupilotMessage};
+use nightingale::{TcpConnection, error::Error as NightingaleError};
 use tokio;
-use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
+// use tokio::io::AsyncReadExt;
+// use tokio::net::TcpStream;
 
-#[tokio::main]
-async fn main() {
-    ng().await;
-}
+async fn send_message(connection: &mut TcpConnection) {
+    use mavlink::ardupilotmega::*;
 
-async fn mav() {
-    let mut connection = mavlink::connect::<mavlink::common::MavMessage>("tcpout:127.0.0.1:5762")
-        .expect("Error establishing connection.");
+    let target_system = 1;
+    let target_component = 0;
 
-    loop {
-        match connection.recv() {
-            Ok((_, msg)) => {
-                dbg!(msg);
-            }
-            _ => {}
+    let data = COMMAND_INT_DATA {
+        command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
+        param1: GLOBAL_POSITION_INT_DATA::ID as f32,
+        param2: 1_000_000 as f32,
+        target_system,
+        target_component,
+        ..Default::default()
+    };
+
+    let command = MavMessage::COMMAND_INT(data);
+
+    match connection.send(target_system, target_component, &command).await {
+        Ok(n) => {
+            eprintln!("Command sent, {n} bytes were written.");
+            dbg!(command);
         }
+        Err(err)  => { eprintln!("Error sending command: {:?}", err); }
     }
 }
 
-async fn ng() {
+#[tokio::main]
+async fn main() -> Result<(), NightingaleError> {
     let mut connection = TcpConnection::connect("127.0.0.1:5762", MavlinkVersion::V2)
         .await
         .expect("Error establishing connection");
 
-    let mut counter = 0usize;
+    send_message(&mut connection).await;
+
+    let mut counter = 0;
 
     loop {
-        match connection
-            .receive::<mavlink::ardupilotmega::MavMessage>()
-            .await
-        {
+        match connection.receive::<ArdupilotMessage>().await {
             Ok(message) => {
-                dbg!(counter, message);
-                counter += 1;
+                use ArdupilotMessage::*;
+
+                match message {
+                    HEARTBEAT(_) | TIMESYNC(_) => { },
+                    _ => { eprintln!("order = {:?}, {:#?}", counter, message); }
+                }
             }
-            Err(err) => {
+
+            Err(err)  => {
                 dbg!(err);
             }
         }
-    }
-}
 
-async fn tk() {
-    let mut stream = TcpStream::connect("127.0.0.1:5762").await.expect("err");
-    // let mut reader = tokio::io::BufReader::new(stream);
-
-    let mut bytes = [0u8; 1024];
-
-    match stream.read(&mut bytes).await {
-        Ok(n) => {
-            assert_eq!(bytes[0], mavlink::MAV_STX_V2);
-            dbg!(n);
-        }
-        _ => {}
+        counter += 1;
     }
 }
