@@ -1,7 +1,7 @@
 use crate::error::Result;
-use mavlink::{MavlinkVersion, Message};
+use mavlink::{MavHeader, MavlinkVersion, Message};
 use std::ops::{Deref, DerefMut};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod v2 {
     use super::*;
@@ -17,6 +17,40 @@ pub mod v2 {
         const SIZE: usize = std::mem::size_of::<Raw>();
         const HEADER_SIZE: usize = 9;
 
+        fn new() -> Self {
+            Self(Raw::new())
+        }
+
+        fn buffer(&self) -> &[u8; Self::SIZE] {
+            // XXX: The current implementation of MAVLinkV2MessageRaw does not
+            // allow you to access its internal buffer. This is a hack-around
+            // to get things done *until* the `mavlink` crate offers a new way
+            // to use its API in a flexible way. Hence, this is a *highly*
+            // unsafe transmute, as MAVLinkV2MessageRaw does not derive
+            // `repr(transparent)` and things can go wrong once the type
+            // definition of MAVLinkV2MessageRaw changes.
+            //
+            // TODO: Use a safer alternative. Or remove this transmute
+            // completely if `mavlink` crate offers a way to access its
+            // internal buffer.
+            unsafe { std::mem::transmute(&self.0) }
+        }
+
+        fn buffer_mut(&mut self) -> &mut [u8; Self::SIZE] {
+            // XXX: The current implementation of MAVLinkV2MessageRaw does not
+            // allow you to access its internal buffer. This is a hack-around
+            // to get things done *until* the `mavlink` crate offers a new way
+            // to use its API in a flexible way. Hence, this is a *highly*
+            // unsafe transmute, as MAVLinkV2MessageRaw does not derive
+            // `repr(transparent)` and things can go wrong once the type
+            // definition of MAVLinkV2MessageRaw changes.
+            //
+            // TODO: Use a safer alternative. Or remove this transmute
+            // completely if `mavlink` crate offers a way to access its
+            // internal buffer.
+            unsafe { std::mem::transmute(&mut self.0) }
+        }
+
         pub fn parse<M: Message>(&self) -> Result<M> {
             M::parse(MavlinkVersion::V2, self.message_id(), self.payload()).map_err(From::from)
         }
@@ -25,8 +59,8 @@ pub mod v2 {
             // TODO: Maybe use BufReader here?
             while reader.read_u8().await? != MAGIC {}
 
-            // Initialize raw message buffer.
-            let mut buffer = [0; Self::SIZE];
+            let mut message = RawMessage::new();
+            let buffer = message.buffer_mut();
 
             // Write STX, read header.
             buffer[0] = MAGIC;
@@ -43,20 +77,7 @@ pub mod v2 {
             // Read payload + checksum + signature.
             reader.read_exact(&mut buffer[10..(12 + len + sig)]).await?;
 
-            // XXX: The current implementation of MAVLinkV2MessageRaw does not
-            // allow you to access its internal buffer. This is a hack-around
-            // to get things done *until* the `mavlink` crate offers a new way
-            // to use its API in a flexible way. Hence, this is a *highly*
-            // unsafe transmute, as MAVLinkV2MessageRaw does not derive
-            // `repr(transparent)` and things can go wrong once the type
-            // definition of MAVLinkV2MessageRaw changes.
-            //
-            // TODO: Use a safer alternative. Or remove this transmute
-            // completely if `mavlink` crate offers a way to access its
-            // internal buffer.
-            let raw = unsafe { std::mem::transmute(buffer) };
-
-            Ok(Self(raw))
+            Ok(message)
         }
     }
 
@@ -85,6 +106,23 @@ pub mod v2 {
                 break raw.parse();
             }
         }
+    }
+
+    pub async fn write<W, M>(writer: &mut W, header: MavHeader, data: &M) -> Result<usize>
+    where
+        W: AsyncWriteExt + Unpin,
+        M: Message,
+    {
+        let mut message = RawMessage::new();
+        message.serialize_message(header, data);
+
+        let payload = message.payload_length() as usize;
+        let size = 1 + RawMessage::HEADER_SIZE + payload + 2;
+
+        let buffer = message.buffer();
+        writer.write_all(&buffer[..size]).await?;
+
+        Ok(size)
     }
 }
 
@@ -100,6 +138,40 @@ pub mod v1 {
         const SIZE: usize = std::mem::size_of::<Raw>();
         const HEADER_SIZE: usize = 5;
 
+        fn new() -> Self {
+            Self(Raw::new())
+        }
+
+        fn buffer(&self) -> &[u8; Self::SIZE] {
+            // XXX: The current implementation of MAVLinkV1MessageRaw does not
+            // allow you to access its internal buffer. This is a hack-around
+            // to get things done *until* the `mavlink` crate offers a new way
+            // to use its API in a flexible way. Hence, this is a *highly*
+            // unsafe transmute, as MAVLinkV1MessageRaw does not derive
+            // `repr(transparent)` and things can go wrong once the type
+            // definition of MAVLinkV1MessageRaw changes.
+            //
+            // TODO: Use a safer alternative. Or remove this transmute
+            // completely if `mavlink` crate offers a way to access its
+            // internal buffer.
+            unsafe { std::mem::transmute(&self.0) }
+        }
+
+        fn buffer_mut(&mut self) -> &mut [u8; Self::SIZE] {
+            // XXX: The current implementation of MAVLinkV1MessageRaw does not
+            // allow you to access its internal buffer. This is a hack-around
+            // to get things done *until* the `mavlink` crate offers a new way
+            // to use its API in a flexible way. Hence, this is a *highly*
+            // unsafe transmute, as MAVLinkV1MessageRaw does not derive
+            // `repr(transparent)` and things can go wrong once the type
+            // definition of MAVLinkV1MessageRaw changes.
+            //
+            // TODO: Use a safer alternative. Or remove this transmute
+            // completely if `mavlink` crate offers a way to access its
+            // internal buffer.
+            unsafe { std::mem::transmute(&mut self.0) }
+        }
+
         pub fn parse<M: Message>(&self) -> Result<M> {
             M::parse(MavlinkVersion::V1, self.message_id() as u32, self.payload())
                 .map_err(From::from)
@@ -109,8 +181,8 @@ pub mod v1 {
             // TODO: Maybe use BufReader here?
             while reader.read_u8().await? != MAGIC {}
 
-            // Initialize raw message buffer.
-            let mut buffer = [0; Self::SIZE];
+            let mut message = RawMessage::new();
+            let buffer = message.buffer_mut();
 
             // Write STX, read header.
             buffer[0] = MAGIC;
@@ -124,20 +196,7 @@ pub mod v1 {
             // Read payload + checksum + signature.
             reader.read_exact(&mut buffer[6..(8 + len)]).await?;
 
-            // XXX: The current implementation of MAVLinkV1MessageRaw does not
-            // allow you to access its internal buffer. This is a hack-around
-            // to get things done *until* the `mavlink` crate offers a new way
-            // to use its API in a flexible way. Hence, this is a *highly*
-            // unsafe transmute, as MAVLinkV1MessageRaw does not derive
-            // `repr(transparent)` and things can go wrong once the type
-            // definition of MAVLinkV1MessageRaw changes.
-            //
-            // TODO: Use a safer alternative. Or remove this transmute
-            // completely if `mavlink` crate offers a way to access its
-            // internal buffer.
-            let raw = unsafe { std::mem::transmute(buffer) };
-
-            Ok(Self(raw))
+            Ok(message)
         }
     }
 
@@ -166,5 +225,22 @@ pub mod v1 {
                 break raw.parse();
             }
         }
+    }
+
+    pub async fn write<W, M>(writer: &mut W, header: MavHeader, data: &M) -> Result<usize>
+    where
+        W: AsyncWriteExt + Unpin,
+        M: Message,
+    {
+        let mut message = RawMessage::new();
+        message.serialize_message(header, data);
+
+        let payload = message.payload_length() as usize;
+        let size = 1 + RawMessage::HEADER_SIZE + payload + 2;
+
+        let buffer = message.buffer();
+        writer.write_all(&buffer[..size]).await?;
+
+        Ok(size)
     }
 }
