@@ -1,5 +1,5 @@
 use mavlink::{MessageData, MavlinkVersion, ardupilotmega::MavMessage as ArdupilotMessage};
-use nightingale::{TcpConnection, error::Error as NightingaleError};
+use nightingale::{ connection::TcpConnection, error::Error as NightingaleError};
 use tokio;
 // use tokio::io::AsyncReadExt;
 // use tokio::net::TcpStream;
