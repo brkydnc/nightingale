@@ -2,7 +2,7 @@ use crate::error::Result;
 use crate::message;
 use async_trait::async_trait;
 
-use mavlink::{ Message, MavHeader };
+use mavlink::{MavHeader, Message};
 use tokio::net::{
     tcp::{OwnedReadHalf, OwnedWriteHalf},
     TcpStream, ToSocketAddrs,
@@ -10,7 +10,12 @@ use tokio::net::{
 
 #[async_trait]
 pub trait Sender {
-    async fn send<M: Message + Sync>(&mut self, system_id: u8, component_id: u8, message: &M) -> Result<usize>;
+    async fn send<M: Message + Sync>(
+        &mut self,
+        system_id: u8,
+        component_id: u8,
+        message: &M,
+    ) -> Result<usize>;
 }
 
 #[async_trait]
@@ -42,7 +47,8 @@ pub struct TcpSender {
 #[async_trait]
 impl Sender for TcpSender {
     async fn send<M>(&mut self, system_id: u8, component_id: u8, message: &M) -> Result<usize>
-        where M: Message + Sync
+    where
+        M: Message + Sync,
     {
         let header = MavHeader {
             system_id,
@@ -64,11 +70,15 @@ impl Connection for TcpConnection {
     type Receiver = TcpReceiver;
 
     async fn connect<A>(addr: A) -> Result<(Self::Sender, Self::Receiver)>
-        where A: ToSocketAddrs + Send
+    where
+        A: ToSocketAddrs + Send,
     {
         let stream = TcpStream::connect(addr).await?;
         let (reader, writer) = stream.into_split();
-        let sender = TcpSender { writer, sequence: 0 };
+        let sender = TcpSender {
+            writer,
+            sequence: 0,
+        };
         let receiver = TcpReceiver(reader);
 
         Ok((sender, receiver))

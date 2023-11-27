@@ -1,16 +1,14 @@
 use mavlink::{ardupilotmega::MavMessage as ArdupilotMessage, *};
-use nightingale::{
-    connection::TcpConnection,
-    error::Error as NightingaleError,
-    link::Link,
-};
+use nightingale::{connection::TcpConnection, error::Error as NightingaleError, link::Link};
 use tokio;
 // use tokio::io::AsyncReadExt;
 // use tokio::net::TcpStream;
 
 #[tokio::main]
 async fn main() -> Result<(), NightingaleError> {
-    let handler = |msg: ArdupilotMessage| { dbg!(msg.message_id()); };
+    let handler = |msg: ArdupilotMessage| {
+        dbg!(msg.message_id());
+    };
     let link = Link::<TcpConnection>::connect("127.0.0.1:5762", handler).await?;
     std::thread::sleep(std::time::Duration::from_secs(1));
     drop(link);

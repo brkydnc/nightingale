@@ -1,9 +1,9 @@
-use crate::connection::{Connection, Receiver };
+use crate::connection::{Connection, Receiver};
 use crate::error::Result;
 use mavlink::Message;
-use tokio::{net::ToSocketAddrs, select };
-use tokio_util::sync::CancellationToken;
 use std::ops::Deref;
+use tokio::{net::ToSocketAddrs, select};
+use tokio_util::sync::CancellationToken;
 
 pub struct Link<C: Connection> {
     sender: C::Sender,
@@ -23,10 +23,7 @@ impl<C: Connection + 'static> Link<C> {
 
         tokio::spawn(fut);
 
-        Ok(Self {
-            sender,
-            token,
-        })
+        Ok(Self { sender, token })
     }
 
     async fn receive<M, H>(mut receiver: C::Receiver, message_handler: H, token: CancellationToken)
