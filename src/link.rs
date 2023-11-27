@@ -1,86 +1,64 @@
+use crate::connection::{Connection, Receiver };
 use crate::error::Result;
-use std::collections::HashMap;
 use mavlink::Message;
-use tokio::{select, net::ToSocketAddrs, task::JoinHandle};
+use tokio::{net::ToSocketAddrs, select };
 use tokio_util::sync::CancellationToken;
-use crate::connection::{ Connection, Receiver };
+use std::ops::Deref;
 
-type MessageID = u32;
-type MessageHandler<M> = Box<dyn Fn(&M) + Send>;
-type MessageHandlerMap<M> = HashMap<MessageID, Vec<MessageHandler<M>>>;
-
-pub struct IdleLink<M, C: Connection> {
-    sender: C::Sender, 
-    receiver: C::Receiver,
-    handlers: MessageHandlerMap<M>,
-}
-
-impl<M: Message + 'static, C: Connection + 'static> IdleLink<M, C> {
-    pub fn start(self) -> Link<M, C> {
-        let receiver = self.receiver;
-        let task = ReceiverTask::spawn::<M>(receiver);
-
-        Link {
-            sender: self.sender,
-            handlers: self.handlers,
-            task,
-        }
-    }
-}
-
-pub struct Link<M, C: Connection> {
-    sender: C::Sender, 
-    handlers: MessageHandlerMap<M>,
-    task: ReceiverTask<C::Receiver>,
-}
-
-impl<M: Message, C: Connection> Link<M, C> {
-    pub async fn connect<A>(address: A) -> Result<IdleLink<M, C>>
-        where A: ToSocketAddrs + Send
-    {
-        let (sender, receiver) = C::connect(address).await?;
-        Ok(IdleLink { sender, receiver, handlers: Default::default() })
-    }
-
-    // fn subscribe(&mut self, id: MessageID, handler: MessageHandler<T>) {
-    //     self.handlers.entry(id).or_default().push(handler);
-    // }
-}
-
-impl<M, C: Connection> Drop for Link<M, C> {
-    fn drop(&mut self) {
-        self.task.token.cancel();
-    }
-}
-
-struct ReceiverTask<R> {
-    handle: JoinHandle<R>,
+pub struct Link<C: Connection> {
+    sender: C::Sender,
     token: CancellationToken,
 }
 
-impl<R: Receiver + 'static> ReceiverTask<R> {
-    fn spawn<M>(receiver: R) -> Self
-        where M: Message + 'static
+impl<C: Connection + 'static> Link<C> {
+    pub async fn connect<M, H, A>(address: A, message_handler: H) -> Result<Self>
+    where
+        M: Message + 'static,
+        H: Fn(M) + Send + 'static,
+        A: ToSocketAddrs + Send,
     {
+        let (sender, receiver) = C::connect(address).await?;
         let token = CancellationToken::new();
-        let fut = Self::receive::<M>(receiver, token.clone());
-        let handle = tokio::spawn(fut);
-        Self { handle, token }
+        let fut = Self::receive::<M, H>(receiver, message_handler, token.clone());
+
+        tokio::spawn(fut);
+
+        Ok(Self {
+            sender,
+            token,
+        })
     }
 
-    async fn receive<M: Message>(mut receiver: R, token: CancellationToken) -> R {
+    async fn receive<M, H>(mut receiver: C::Receiver, message_handler: H, token: CancellationToken)
+    where
+        M: Message,
+        H: Fn(M),
+    {
         loop {
             select! {
                 _ = token.cancelled() => { break }
                 result = receiver.receive::<M>() => {
                     match result {
-                        Ok(message) => { dbg!(message.message_id()); }
+                        Ok(message) => { message_handler(message) }
                         Err(err) => { dbg!(err); }
                     }
                 }
             }
         }
+    }
+}
 
-        receiver
+impl<C: Connection> Deref for Link<C> {
+    type Target = C::Sender;
+
+    fn deref(&self) -> &Self::Target {
+        &self.sender
+    }
+}
+
+impl<C: Connection> Drop for Link<C> {
+    fn drop(&mut self) {
+        // TODO: We cancel, but not join the receiver task. Is this problematic?
+        self.token.cancel();
     }
 }
