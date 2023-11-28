@@ -1,73 +1,41 @@
-use mavlink::{ardupilotmega::MavMessage as ArdupilotMessage, *};
-use nightingale::{connection::TcpConnection, error::Error as NightingaleError, link::Link};
+use mavlink::{
+    ardupilotmega::{MavMessage as Message, *},
+    MessageData,
+};
+use nightingale::{
+    connection::TcpConnection as Tcp,
+    error::Error as NightingaleError,
+    link::Link,
+};
+use std::sync::Arc;
 use tokio;
 // use tokio::io::AsyncReadExt;
 // use tokio::net::TcpStream;
 
 #[tokio::main]
 async fn main() -> Result<(), NightingaleError> {
-    let handler = |msg: ArdupilotMessage| {
-        dbg!(msg.message_id());
-    };
-    let link = Link::<TcpConnection>::connect("127.0.0.1:5762", handler).await?;
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    drop(link);
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    Ok(())
+    let handler = Arc::new(|message: &Message| {
+        dbg!(message);
+    });
+
+    let link: Link<Message, Tcp> = Link::connect("127.0.0.1:5762").await?;
+
+    link.register(GLOBAL_POSITION_INT_DATA::ID, handler.clone());
+
+    let command = Message::COMMAND_INT(COMMAND_INT_DATA {
+        command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
+        param1: GLOBAL_POSITION_INT_DATA::ID as f32,
+        param2: 1_000_000 as f32,
+        target_system: 1,
+        target_component: 0,
+        ..Default::default()
+    });
+
+    link.send(1, 0, &command).await?;
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    link.unregister(GLOBAL_POSITION_INT_DATA::ID, handler);
+
+    loop {}
 }
-
-// async fn send_message(connection: &mut TcpConnection) {
-//     use mavlink::ardupilotmega::*;
-
-//     let target_system = 1;
-//     let target_component = 0;
-
-//     let data = COMMAND_INT_DATA {
-//         command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
-//         param1: GLOBAL_POSITION_INT_DATA::ID as f32,
-//         param2: 1_000_000 as f32,
-//         target_system,
-//         target_component,
-//         ..Default::default()
-//     };
-
-//     let command = MavMessage::COMMAND_INT(data);
-
-//     match connection.send(target_system, target_component, &command).await {
-//         Ok(n) => {
-//             eprintln!("Command sent, {n} bytes were written.");
-//             dbg!(command);
-//         }
-//         Err(err)  => { eprintln!("Error sending command: {:?}", err); }
-//     }
-// }
-
-// #[tokio::main]
-// async fn main() -> Result<(), NightingaleError> {
-//     let mut connection = TcpConnection::connect("127.0.0.1:5762")
-//         .await
-//         .expect("Error establishing connection");
-
-//     send_message(&mut connection).await;
-
-//     let mut counter = 0;
-
-//     loop {
-//         match connection.receive::<ArdupilotMessage>().await {
-//             Ok(message) => {
-//                 use ArdupilotMessage::*;
-
-//                 match message {
-//                     HEARTBEAT(_) | TIMESYNC(_) => { },
-//                     _ => { eprintln!("order = {:?}, {:#?}", counter, message); }
-//                 }
-//             }
-
-//             Err(err)  => {
-//                 dbg!(err);
-//             }
-//         }
-
-//         counter += 1;
-//     }
-// }

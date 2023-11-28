@@ -1,42 +1,103 @@
-use crate::connection::{Connection, Receiver};
+use crate::connection::{Connection, Receiver, Sender};
 use crate::error::Result;
+
 use mavlink::Message;
-use std::ops::Deref;
-use tokio::{net::ToSocketAddrs, select};
 use tokio_util::sync::CancellationToken;
 
-pub struct Link<C: Connection> {
-    sender: C::Sender,
+use tokio::{
+    net::ToSocketAddrs,
+    select,
+    sync::Mutex as AsyncMutex
+};
+
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+type MessageID = u32;
+
+// TODO: Find a way to unregister handlers using a unique identifier.
+// static ID_GENERATOR: AtomicUsize: AtomicUsize::new(0);
+// struct MessageHandler { id: usize, f: Box<dyn Fn(&M)> }
+type MessageHandler<M> = Arc<dyn Fn(&M) + Send + Sync>;
+
+type MessageHandlerMap<M> = HashMap<MessageID, Vec<MessageHandler<M>>>;
+
+pub struct Link<M, C: Connection> {
+    sender: AsyncMutex<C::Sender>,
     token: CancellationToken,
+    handlers: Arc<Mutex<MessageHandlerMap<M>>>,
 }
 
-impl<C: Connection + 'static> Link<C> {
-    pub async fn connect<M, D, A>(address: A, dispatcher: D) -> Result<Self>
+// TODO: The generics shouldn't be too strict.
+impl<M: Message + Sync + 'static, C: Connection + 'static> Link<M, C> {
+    pub async fn connect<A>(address: A) -> Result<Self>
     where
-        M: Message + 'static,
-        D: Fn(M) + Send + 'static,
         A: ToSocketAddrs + Send,
     {
         let (sender, receiver) = C::connect(address).await?;
+        let handlers = Default::default();
         let token = CancellationToken::new();
-        let fut = Self::receive::<M, D>(receiver, dispatcher, token.clone());
+        let fut = Self::receive(receiver, token.clone(), Arc::clone(&handlers));
 
         tokio::spawn(fut);
 
-        Ok(Self { sender, token })
+        Ok(Self {
+            sender: sender.into(),
+            token,
+            handlers,
+        })
     }
 
-    async fn receive<M, D>(mut receiver: C::Receiver, dispatcher: D, token: CancellationToken)
-    where
-        M: Message,
-        D: Fn(M),
-    {
+    pub fn register(&self, id: MessageID, handler: MessageHandler<M>) {
+        // TODO: Panicking here is probably a bad idea.
+        let mut map = self.handlers.lock().expect("Handler map is poisoned.");
+
+        map.entry(id).or_default().push(handler);
+    }
+
+    pub fn unregister(&self, id: MessageID, handler: MessageHandler<M>) {
+        // TODO: Panicking here is probably a bad idea.
+        let mut map = self.handlers.lock().expect("Handler map is poisoned.");
+
+        map.entry(id).and_modify(|vec| {
+            let query = vec.iter().position(|h| Arc::ptr_eq(h, &handler));
+
+            if let Some(index) = query {
+                vec.swap_remove(index);
+            }
+        });
+    }
+
+    pub async fn send(&self, system: u8, component: u8, message: &M) -> Result<usize> {
+        let mut sender = self.sender.lock().await;
+        sender.send(system, component, message).await
+    }
+
+    async fn receive(
+        mut receiver: C::Receiver,
+        token: CancellationToken,
+        handlers: Arc<Mutex<MessageHandlerMap<M>>>,
+    ) {
         loop {
             select! {
                 _ = token.cancelled() => { break }
                 result = receiver.receive::<M>() => {
                     match result {
-                        Ok(message) => { dispatcher(message) }
+                        Ok(message) => {
+                            // XXX: Panicking here is very highly likely a bad idea.
+                            let mut map = handlers.lock()
+                                .expect("Handler map is poisoned.");
+
+                            map
+                                .entry(message.message_id())
+                                .and_modify(|vec| {
+                                    for f in vec {
+                                        f(&message);
+                                    }
+                                });
+                        }
                         Err(err) => { dbg!(err); }
                     }
                 }
@@ -45,15 +106,7 @@ impl<C: Connection + 'static> Link<C> {
     }
 }
 
-impl<C: Connection> Deref for Link<C> {
-    type Target = C::Sender;
-
-    fn deref(&self) -> &Self::Target {
-        &self.sender
-    }
-}
-
-impl<C: Connection> Drop for Link<C> {
+impl<M, C: Connection> Drop for Link<M, C> {
     fn drop(&mut self) {
         // TODO: We cancel, but not join the receiver task. Is this problematic?
         self.token.cancel();
