@@ -11,32 +11,32 @@ pub struct Link<C: Connection> {
 }
 
 impl<C: Connection + 'static> Link<C> {
-    pub async fn connect<M, H, A>(address: A, message_handler: H) -> Result<Self>
+    pub async fn connect<M, D, A>(address: A, dispatcher: D) -> Result<Self>
     where
         M: Message + 'static,
-        H: Fn(M) + Send + 'static,
+        D: Fn(M) + Send + 'static,
         A: ToSocketAddrs + Send,
     {
         let (sender, receiver) = C::connect(address).await?;
         let token = CancellationToken::new();
-        let fut = Self::receive::<M, H>(receiver, message_handler, token.clone());
+        let fut = Self::receive::<M, D>(receiver, dispatcher, token.clone());
 
         tokio::spawn(fut);
 
         Ok(Self { sender, token })
     }
 
-    async fn receive<M, H>(mut receiver: C::Receiver, message_handler: H, token: CancellationToken)
+    async fn receive<M, D>(mut receiver: C::Receiver, dispatcher: D, token: CancellationToken)
     where
         M: Message,
-        H: Fn(M),
+        D: Fn(M),
     {
         loop {
             select! {
                 _ = token.cancelled() => { break }
                 result = receiver.receive::<M>() => {
                     match result {
-                        Ok(message) => { message_handler(message) }
+                        Ok(message) => { dispatcher(message) }
                         Err(err) => { dbg!(err); }
                     }
                 }
