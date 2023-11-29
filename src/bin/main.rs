@@ -2,11 +2,7 @@ use mavlink::{
     ardupilotmega::{MavMessage as Message, *},
     MessageData,
 };
-use nightingale::{
-    connection::TcpConnection as Tcp,
-    error::Error as NightingaleError,
-    link::Link,
-};
+use nightingale::{connection::TcpConnection as Tcp, error::Error as NightingaleError, link::Link};
 use std::sync::Arc;
 use tokio;
 // use tokio::io::AsyncReadExt;

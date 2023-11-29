@@ -4,23 +4,19 @@ use crate::error::Result;
 use mavlink::Message;
 use tokio_util::sync::CancellationToken;
 
-use tokio::{
-    net::ToSocketAddrs,
-    select,
-    sync::Mutex as AsyncMutex
-};
+use tokio::{net::ToSocketAddrs, select, sync::Mutex as AsyncMutex};
 
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-type MessageID = u32;
+pub type MessageID = u32;
 
 // TODO: Find a way to unregister handlers using a unique identifier.
 // static ID_GENERATOR: AtomicUsize: AtomicUsize::new(0);
 // struct MessageHandler { id: usize, f: Box<dyn Fn(&M)> }
-type MessageHandler<M> = Arc<dyn Fn(&M) + Send + Sync>;
+pub type MessageHandler<M> = Arc<dyn Fn(&M) + Send + Sync>;
 
 type MessageHandlerMap<M> = HashMap<MessageID, Vec<MessageHandler<M>>>;
 
