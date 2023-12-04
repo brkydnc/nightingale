@@ -28,6 +28,14 @@ impl Packet {
     const IFLAG_SIGNED: u8 = 0x01;
 }
 
+impl Default for Packet {
+    fn default() -> Self {
+        let header = Header { system_id: 255, component_id: 0, sequence: 0 };
+        let message = Message::HEARTBEAT(Default::default());
+        Self { header, message }
+    }
+}
+
 pub struct PacketEncoder;
 
 impl Encoder<Packet> for PacketEncoder {

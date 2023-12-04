@@ -37,28 +37,30 @@
 // }
 //
 
-use tokio_util::codec::FramedRead;
-use tokio_stream::StreamExt;
-use nightingale::wire::PacketDecoder;
+use tokio_util::codec::{FramedRead, FramedWrite};
+use futures::stream::StreamExt;
+use mavlink::Message as MessageExt;
+use nightingale::{
+    link::Link,
+    wire::{Message, PacketDecoder, PacketEncoder}
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection = tokio::net::TcpStream::connect("127.0.0.1:5762").await?;
-    let (reader, _writer) = connection.into_split();
+    let (reader, writer) = connection.into_split();
 
-    let mut stream = FramedRead::new(reader, PacketDecoder);
+    let sink = FramedWrite::new(writer, PacketEncoder);
+    let stream = FramedRead::new(reader, PacketDecoder);
 
-    loop {
-        match stream.next().await { 
-            Some(result) => match result {
-                Ok(packet) => {
-                    dbg!(packet);
-                },
-                Err(error) => {
-                    dbg!(error);
-                }
-            },
-            None => { dbg!("NONE."); },
-        }
+    let link = Link::new(sink, stream);
+
+    let mut subscriber = link.subscribe();
+
+    while let Ok(r) = subscriber.changed().await {
+        dbg!(r);
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
+
+    Ok(())
 }

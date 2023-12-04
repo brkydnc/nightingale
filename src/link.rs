@@ -1,110 +1,86 @@
-use crate::connection::{Connection, Receiver, Sender};
-use crate::error::Result;
+use crate::wire::{Packet, Header, Message};
+use tokio::sync::{Mutex, watch};
+use futures::prelude::*;
+use std::ops::{Deref, DerefMut};
 
-use mavlink::{ardupilotmega::MavMessage as Message, Message as MavlinkMessage};
-use tokio_util::sync::CancellationToken;
+type DecoderResult = std::result::Result<Packet, std::io::Error>;
 
-use tokio::{net::ToSocketAddrs, select, sync::Mutex as AsyncMutex};
+type Publisher = watch::Sender<Packet>;
+type Subscriber = watch::Receiver<Packet>;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-
-pub type MessageID = u32;
-
-// TODO: Find a way to unregister handlers using a unique identifier.
-// static ID_GENERATOR: AtomicUsize: AtomicUsize::new(0);
-// struct MessageHandler { id: usize, f: Box<dyn Fn(&M)> }
-pub type MessageHandler = Arc<dyn Fn(&Message) + Send + Sync>;
-
-type MessageHandlerMap = HashMap<MessageID, Vec<MessageHandler>>;
-
-pub struct Link<C: Connection> {
-    sender: AsyncMutex<C::Sender>,
-    token: CancellationToken,
-    handlers: Arc<Mutex<MessageHandlerMap>>,
+pub struct Link<T> {
+    sink: Mutex<SequencedSink<T>>,
+    subscriber: Subscriber,
 }
 
-// TODO: The generics shouldn't be too strict.
-impl<C: Connection + 'static> Link<C> {
-    pub async fn connect<A>(address: A) -> Result<Self>
-    where
-        A: ToSocketAddrs + Send,
+impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
+    pub fn new<U>(sink: T, stream: U) -> Self 
+        where U: Stream<Item = DecoderResult> + Unpin + Send + 'static,
     {
-        let (sender, receiver) = C::connect(address).await?;
-        let handlers = Default::default();
-        let token = CancellationToken::new();
-        let fut = Self::receive(receiver, token.clone(), Arc::clone(&handlers));
-
-        tokio::spawn(fut);
-
-        Ok(Self {
-            sender: sender.into(),
-            token,
-            handlers,
-        })
+        let (publisher, subscriber) = watch::channel(Default::default());
+        let sink = SequencedSink { sink, sequence: 0 }.into();
+        tokio::spawn(Self::receiver(stream, publisher));
+        Self { sink, subscriber }
     }
 
-    pub fn register(&self, id: MessageID, handler: MessageHandler) {
-        // TODO: Panicking here is probably a bad idea.
-        let mut map = self.handlers.lock().expect("Handler map is poisoned.");
-
-        map.entry(id).or_default().push(handler);
+    pub fn subscribe(&self) -> Subscriber {
+        self.subscriber.clone()
     }
 
-    pub fn unregister(&self, id: MessageID, handler: MessageHandler) {
-        // TODO: Panicking here is probably a bad idea.
-        let mut map = self.handlers.lock().expect("Handler map is poisoned.");
+    pub async fn send(&self, system_id: u8, component_id: u8, message: Message) {
+        let mut sink = self.sink.lock().await;
+        let header = Header { system_id, component_id, sequence: sink.sequence };
+        let packet = Packet { header, message };
+        sink.sequence = sink.sequence.wrapping_add(1);
 
-        map.entry(id).and_modify(|vec| {
-            let query = vec.iter().position(|h| Arc::ptr_eq(h, &handler));
-
-            if let Some(index) = query {
-                vec.swap_remove(index);
-            }
-        });
+        // Silently fail if anything goes wrong.
+        // 
+        // TODO: This should return a result.
+        let _ = sink.send(packet).await;
     }
 
-    pub async fn send(&self, system: u8, component: u8, message: &Message) -> Result<usize> {
-        let mut sender = self.sender.lock().await;
-        sender.send(system, component, message).await
-    }
-
-    async fn receive(
-        mut receiver: C::Receiver,
-        token: CancellationToken,
-        handlers: Arc<Mutex<MessageHandlerMap>>,
-    ) {
+    async fn receiver<U>(mut stream: U, publisher: Publisher) 
+        where U: Stream<Item = DecoderResult> + Unpin,
+    {
         loop {
-            select! {
-                _ = token.cancelled() => { break }
-                result = receiver.receive::<Message>() => {
-                    match result {
-                        Ok(message) => {
-                            // XXX: Panicking here is very highly likely a bad idea.
-                            let mut map = handlers.lock()
-                                .expect("Handler map is poisoned.");
-
-                            map
-                                .entry(message.message_id())
-                                .and_modify(|vec| {
-                                    for f in vec {
-                                        f(&message);
-                                    }
-                                });
+            match stream.next().await { 
+                Some(result) => match result {
+                    Ok(packet) => {
+                        // Publish the packet. Stop the task if it fails,
+                        // it means that all receivers (including the link)
+                        // are dropped.
+                        if let Err(_) = publisher.send(packet) {
+                            break;
                         }
-                        Err(err) => { dbg!(err); }
+                    },
+                    Err(error) => {
+                        eprintln!("[INVALID_PACKET_RECEIVED] {:?}", error);
                     }
-                }
+                },
+                None => {
+                    eprintln!("[NONE_RECEIVED] Do something?");
+                },
             }
         }
     }
 }
 
-impl<C: Connection> Drop for Link<C> {
-    fn drop(&mut self) {
-        // TODO: We cancel, but not join the receiver task. Is this problematic?
-        self.token.cancel();
+struct SequencedSink<T> {
+    sink: T,
+    sequence: u8,
+}
+
+impl<T> Deref for SequencedSink<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.sink
     }
 }
+
+impl<T> DerefMut for SequencedSink<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.sink
+    }
+}
+
+

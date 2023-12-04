@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 crc16 = "0.4.0"
+futures = "0.3.29"
 mavlink = "0.12.0"
 tokio = { version = "1.33.0", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
-tokio-stream = "0.1.14"
 tokio-util = { version = "0.7.10", features = ["codec"] }
