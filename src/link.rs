@@ -1,7 +1,7 @@
 use crate::connection::{Connection, Receiver, Sender};
 use crate::error::Result;
 
-use mavlink::{Message as MavlinkMessage, ardupilotmega::{MavMessage as Message}};
+use mavlink::{ardupilotmega::MavMessage as Message, Message as MavlinkMessage};
 use tokio_util::sync::CancellationToken;
 
 use tokio::{net::ToSocketAddrs, select, sync::Mutex as AsyncMutex};

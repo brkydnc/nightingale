@@ -3,20 +3,17 @@ use crate::{
     prelude::*,
 };
 
-use mavlink::{
-    ardupilotmega as apm,
-    ardupilotmega::MavMessage as Message,
-};
+use mavlink::{ardupilotmega as apm, ardupilotmega::MavMessage as Message};
 
 use std::{
-    time::Duration,
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use tokio::{
+    sync::{mpsc, oneshot},
     time::timeout,
-    sync::{ mpsc, oneshot }
 };
 
 type CommandID = u16;
@@ -47,7 +44,6 @@ impl<C: Connection + 'static> CommandProtocol<C> {
         Self { link, handler, map }
     }
 
-
     // TODO: We assume cmd.target_system == header.target_system, is this correct?
     async fn command_int(
         cmd: CommandInt,
@@ -61,7 +57,9 @@ impl<C: Connection + 'static> CommandProtocol<C> {
 
         // Send the message, this is our first attempt.
         // TODO: What should we do if `send` fails? (Currently it is ignored)
-        let _ = link.send(cmd.target_system, cmd.target_component, &msg).await;
+        let _ = link
+            .send(cmd.target_system, cmd.target_component, &msg)
+            .await;
 
         // The number of attempts to receive an ack.
         let mut attempts = 1;
@@ -75,10 +73,14 @@ impl<C: Connection + 'static> CommandProtocol<C> {
                 // Timeout for the attempt.
                 Err(_elapsed) => {
                     // Every attempt timed out. We received no ack, just stop.
-                    if attempts >= COMMAND_RETRY { break None; } 
+                    if attempts >= COMMAND_RETRY {
+                        break None;
+                    }
 
                     // Retry sending the message.
-                    let _ = link.send(cmd.target_system, cmd.target_component, &msg).await;
+                    let _ = link
+                        .send(cmd.target_system, cmd.target_component, &msg)
+                        .await;
                     attempts += 1;
                 }
             }
@@ -87,10 +89,8 @@ impl<C: Connection + 'static> CommandProtocol<C> {
         // Send the return value. Don't care if it is delivered correctly.
         let _ = tx.send(ret);
 
-
         // Remove COMMAND_ACK sender from the map.
-        map
-            .lock()
+        map.lock()
             .expect("Command protocol's map is poisoned.")
             .remove(&(cmd.command as CommandID));
     }
@@ -98,7 +98,9 @@ impl<C: Connection + 'static> CommandProtocol<C> {
     fn ack_handler(map: Arc<Mutex<AckSenderMap>>) -> MessageHandler {
         Arc::new(move |message: &Message| {
             // TODO: Conversion *hack* goes here.
-            let Message::COMMAND_ACK(ack) = message else { unreachable!() };
+            let Message::COMMAND_ACK(ack) = message else {
+                unreachable!()
+            };
 
             let guard = map.lock().expect("Command protocol's map is poisoned.");
 

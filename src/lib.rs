@@ -1,11 +1,10 @@
-pub mod command;
-pub mod connection;
+// pub mod command;
+// pub mod link;
 pub mod error;
-pub mod link;
-pub mod message;
+pub mod wire;
 
-pub mod prelude {
-    pub use crate::connection::Connection;
-    pub use crate::link::Link;
-    pub use crate::error::{Result, Error};
-}
+// pub mod prelude {
+//     pub use crate::connection::Connection;
+//     pub use crate::error::{Error, Result};
+//     pub use crate::link::Link;
+// }
