@@ -14,7 +14,7 @@ async fn main() -> Result<(), NightingaleError> {
         dbg!(message);
     });
 
-    let link: Link<Message, Tcp> = Link::connect("127.0.0.1:5762").await?;
+    let link: Link<Tcp> = Link::connect("192.168.1.105:5763").await?;
 
     link.register(GLOBAL_POSITION_INT_DATA::ID, handler.clone());
 
@@ -29,9 +29,9 @@ async fn main() -> Result<(), NightingaleError> {
 
     link.send(1, 0, &command).await?;
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // std::thread::sleep(std::time::Duration::from_secs(2));
 
-    link.unregister(GLOBAL_POSITION_INT_DATA::ID, handler);
+    // link.unregister(GLOBAL_POSITION_INT_DATA::ID, handler);
 
     loop {}
 }
