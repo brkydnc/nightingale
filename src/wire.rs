@@ -16,6 +16,7 @@ use tokio_util::{
 
 use crc16::{State, MCRF4XX};
 
+#[derive(Debug)]
 pub struct Packet {
     pub header: Header,
     pub message: Message,
@@ -51,6 +52,10 @@ impl Decoder for PacketDecoder {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        // TODO: Do not search for the magic byte every time this function gets
+        // called. Store this information in a boolean, and check that boolean
+        // until we advance the buffer. After we advance, clear the boolean.
+        //
         // Find the position of the magic byte.
         let magic_byte_position = src
             .iter()
@@ -81,9 +86,9 @@ impl Decoder for PacketDecoder {
         }
 
         // Calculate CRC and validate the packet.
-        let message_id = src[5].into();
+        let message_id = u32::from_le_bytes([src[7], src[8], src[9], 0]);
         let crc_extra = Message::extra_crc(message_id);
-        let crc_data = &src[1..(Packet::HEADER_SIZE + payload_size)];
+        let crc_data = &src[1..(1 + Packet::HEADER_SIZE + payload_size)];
 
         let mut state = State::<MCRF4XX>::new();
         state.update(crc_data);
