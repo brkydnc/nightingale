@@ -1,10 +1,12 @@
 // pub mod command;
-pub mod link;
 pub mod error;
+pub mod link;
 pub mod wire;
 
-pub mod prelude {
-    pub use crate::wire::{ Header, Message, Packet };
-    pub use crate::error::{Error, Result};
-    pub use crate::link::Link;
+pub mod dialect {
+    pub use mavlink::{MavHeader as Header, Message as MessageExt};
+
+    pub use mavlink::ardupilotmega::{MavMessage as Message, *};
+
+    pub type MessageId = u32;
 }

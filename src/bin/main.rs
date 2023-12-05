@@ -37,13 +37,11 @@
 // }
 //
 
-use tokio_util::codec::{FramedRead, FramedWrite};
-use futures::stream::StreamExt;
-use mavlink::Message as MessageExt;
 use nightingale::{
     link::Link,
-    wire::{Message, PacketDecoder, PacketEncoder}
+    wire::{PacketDecoder, PacketEncoder},
 };
+use tokio_util::codec::{FramedRead, FramedWrite};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,9 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut subscriber = link.subscribe();
 
-    while let Ok(r) = subscriber.changed().await {
-        dbg!(r);
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    while let Ok(p) = subscriber.wait_for_message(0).await {
+        dbg!(p);
     }
 
     Ok(())

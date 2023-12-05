@@ -1,13 +1,7 @@
+use crate::dialect::{Header, Message, MessageExt};
 use std::io::{Error, ErrorKind::InvalidData};
 
-use mavlink::{
-    MAVLinkV2MessageRaw as RawPacket,
-    MavlinkVersion::V2,
-    Message as MessageTrait,
-    MAV_STX_V2 as MAGIC_BYTE,
-};
-
-pub use mavlink::{ardupilotmega::MavMessage as Message, MavHeader as Header};
+use mavlink::{MAVLinkV2MessageRaw as RawPacket, MavlinkVersion::V2, MAV_STX_V2 as MAGIC_BYTE};
 
 use tokio_util::{
     bytes::{Buf, BytesMut},
@@ -16,7 +10,7 @@ use tokio_util::{
 
 use crc16::{State, MCRF4XX};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet {
     pub header: Header,
     pub message: Message,
@@ -30,7 +24,11 @@ impl Packet {
 
 impl Default for Packet {
     fn default() -> Self {
-        let header = Header { system_id: 255, component_id: 0, sequence: 0 };
+        let header = Header {
+            system_id: 255,
+            component_id: 0,
+            sequence: 0,
+        };
         let message = Message::HEARTBEAT(Default::default());
         Self { header, message }
     }
