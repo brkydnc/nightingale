@@ -53,9 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let link = Link::new(sink, stream);
 
-    let mut subscriber = link.subscribe();
-
-    while let Ok(p) = subscriber.wait_for_message(0).await {
+    while let Ok(p) = link.wait_for_message(0).await {
         dbg!(p);
     }
 
