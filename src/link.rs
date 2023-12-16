@@ -1,15 +1,17 @@
 use crate::{
-    dialect::{Header, MavCmd, Message, MessageId},
+    dialect::{Header, Message, MessageId},
+    error::{ Error, Result },
     wire::Packet,
 };
 
 use futures::prelude::*;
 use mavlink::Message as MessageTrait;
-use std::ops::{Deref, DerefMut};
-use tokio::sync::{
-    watch::{self, error::RecvError},
-    Mutex,
+use std::{
+    sync::Arc,
+    time::Duration,
+    ops::{Deref, DerefMut}
 };
+use tokio::sync::{ watch, Mutex };
 
 pub struct Link<T> {
     sink: Mutex<SequencedSink<T>>,
@@ -32,7 +34,7 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
         self.subscriber.clone()
     }
 
-    pub async fn send(&self, system_id: u8, component_id: u8, message: Message) {
+    pub async fn send(&self, system_id: u8, component_id: u8, message: Message) -> Result<()> {
         let mut sink = self.sink.lock().await;
         let header = Header {
             system_id,
@@ -42,10 +44,8 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
         let packet = Packet { header, message };
         sink.sequence = sink.sequence.wrapping_add(1);
 
-        // Silently fail if anything goes wrong.
-        //
-        // TODO: This should return a result.
-        let _ = sink.send(packet).await;
+        // TODO: is impl From<...> for Error possible here?
+        sink.send(packet).await.map_err(|_| Error::Send)
     }
 
     async fn receiver<U>(mut stream: U, publisher: Publisher)
@@ -67,11 +67,21 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
                         eprintln!("[INVALID_PACKET_RECEIVED] {:?}", error);
                     }
                 },
-                None => {
-                    eprintln!("[NONE_RECEIVED] Do something?");
-                }
+                None => { break }
             }
         }
+    }
+}
+
+
+impl<T: Sink<Packet> + Unpin + Send + 'static> Link<T> {
+    pub fn spawn_send(
+        self: Arc<Self>,
+        sysid: u8,
+        cmpid: u8,
+        msg: Message
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        tokio::spawn(async move { self.send(sysid, cmpid, msg).await })
     }
 }
 
@@ -83,7 +93,8 @@ type Publisher = watch::Sender<Packet>;
 pub struct Subscriber(watch::Receiver<Packet>);
 
 impl Subscriber {
-    pub async fn wait_for<F>(&mut self, mut f: F) -> Result<Packet, RecvError>
+    // TODO: &mut F or F?
+    pub async fn wait_for<F>(&mut self, f: &mut F) -> Result<Packet>
     where
         F: FnMut(&Packet) -> bool,
     {
@@ -96,17 +107,30 @@ impl Subscriber {
         }
     }
 
-    pub async fn wait_for_message(&mut self, id: MessageId) -> Result<Packet, RecvError> {
-        self.wait_for(|packet| packet.message.message_id() == id)
-            .await
+    pub async fn timeout_for<F>(
+        &mut self,
+        f: &mut F,
+        duration: Duration,
+        retries: usize
+    ) -> Option<Result<Packet>>
+    where
+        F: FnMut(&Packet) -> bool,
+    {
+        let mut attempts = 0;
+
+        while attempts < retries {
+            match tokio::time::timeout(duration, self.wait_for(f)).await {
+                Ok(result) => { return Some(result); }
+                Err(_elapsed) => { attempts += 1; }
+            }
+        }
+
+        None
     }
 
-    pub async fn wait_for_ack(&mut self, cmd: MavCmd) -> Result<Packet, RecvError> {
-        self.wait_for(|packet| match packet.message {
-            Message::COMMAND_ACK(ref ack) => ack.command == cmd,
-            _ => false,
-        })
-        .await
+    pub async fn wait_for_message(&mut self, id: MessageId) -> Result<Packet> {
+        self.wait_for(&mut |packet| packet.message.message_id() == id)
+            .await
     }
 }
 
