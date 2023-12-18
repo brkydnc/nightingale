@@ -1,9 +1,9 @@
-use std::{ sync::Arc, time::Duration, ops::Deref };
+use std::{ sync::Arc, time::Duration};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio_util::codec::{FramedRead, FramedWrite};
 use nightingale::{
     link::{Link, Subscriber},
-    wire::{PacketDecoder, PacketEncoder, Packet},
+    wire::{PacketCodec, Packet},
     error::{Result, Error},
     dialect::{
         Message,
@@ -28,15 +28,15 @@ const GCS_COMPONENT_ID: u8 = 1;
 const TARGET_SYSTEM_ID: u8 = 1;
 const TARGET_COMPONENT_ID: u8 = 1;
 
-type TcpLink = Link<FramedWrite<OwnedWriteHalf, PacketEncoder>>;
+type TcpLink = Link<FramedWrite<OwnedWriteHalf, PacketCodec>>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let connection = tokio::net::TcpStream::connect("127.0.0.1:5762").await?;
     let (reader, writer) = connection.into_split();
 
-    let sink = FramedWrite::new(writer, PacketEncoder);
-    let stream = FramedRead::new(reader, PacketDecoder);
+    let sink = FramedWrite::new(writer, PacketCodec);
+    let stream = FramedRead::new(reader, PacketCodec);
 
     let link = Arc::new(Link::new(sink, stream));
 

@@ -34,9 +34,9 @@ impl Default for Packet {
     }
 }
 
-pub struct PacketEncoder;
+pub struct PacketCodec;
 
-impl Encoder<Packet> for PacketEncoder {
+impl Encoder<Packet> for PacketCodec {
     type Error = Error;
 
     fn encode(
@@ -51,9 +51,7 @@ impl Encoder<Packet> for PacketEncoder {
     }
 }
 
-pub struct PacketDecoder;
-
-impl Decoder for PacketDecoder {
+impl Decoder for PacketCodec {
     type Item = Packet;
     type Error = Error;
 
