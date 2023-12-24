@@ -9,5 +9,8 @@ edition = "2021"
 crc16 = "0.4.0"
 futures = "0.3.29"
 mavlink = { version = "0.12.0", features = ["ardupilotmega"]}
-tokio = { version = "1.33.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio = { version = "1.33.0", features = ["rt-multi-thread", "macros", "net", "time"] }
 tokio-util = { version = "0.7.10", features = ["codec", "net"] }
+
+[dev-dependencies]
+tokio-serial = "5.4.4"

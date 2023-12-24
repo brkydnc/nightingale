@@ -1,8 +1,10 @@
 use std::{ sync::Arc, time::Duration};
-use tokio::net::tcp::OwnedWriteHalf;
-use tokio_util::codec::{FramedRead, FramedWrite};
+use tokio_util::codec::{Decoder, Framed};
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use futures::stream::SplitSink;
+use futures::prelude::*;
 use nightingale::{
-    link::{Link, Subscriber},
+    link::{Link as NightingaleLink, Subscriber},
     wire::{PacketCodec, Packet},
     error::{Result, Error},
     dialect::{
@@ -19,7 +21,6 @@ use nightingale::{
         MISSION_COUNT_DATA,
         HEARTBEAT_DATA,
         COMMAND_INT_DATA,
-        COMMAND_LONG_DATA,
     }
 };
 
@@ -28,71 +29,68 @@ const GCS_COMPONENT_ID: u8 = 1;
 const TARGET_SYSTEM_ID: u8 = 1;
 const TARGET_COMPONENT_ID: u8 = 1;
 
-type TcpLink = Link<FramedWrite<OwnedWriteHalf, PacketCodec>>;
+type Link = NightingaleLink<SplitSink<Framed<SerialStream, PacketCodec>, Packet>>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let connection = tokio::net::TcpStream::connect("127.0.0.1:5762").await?;
-    let (reader, writer) = connection.into_split();
+    let port = tokio_serial::new("/dev/ttyUSB0", 57600).open_native_async()?;
+    let (sink, stream) = PacketCodec.framed(port).split();
 
-    let sink = FramedWrite::new(writer, PacketCodec);
-    let stream = FramedRead::new(reader, PacketCodec);
-
-    let link = Arc::new(Link::new(sink, stream));
+    let link = Arc::new(NightingaleLink::new(sink, stream));
 
     let receive = tokio::spawn(receive_messages(link.subscribe()));
     let broadcast = tokio::spawn(broadcast_heartbeat(link.clone()));
 
-    // Receive GLOBAL_POSITION_INT every  seconds
-    set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
+//     // Receive GLOBAL_POSITION_INT every  seconds
+//     set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
 
-    let planner = MissionPlanner::new()
-        .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
-        .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
-        .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-        .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
-        .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
-        .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
-        .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
-        .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
-        .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
-        .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-        .add(MissionItem::ReturnToLaunch);
+//     let planner = MissionPlanner::new()
+//         .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
+//         .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
+//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+//         .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
+//         .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
+//         .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
+//         .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
+//         .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
+//         .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
+//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+//         .add(MissionItem::ReturnToLaunch);
 
-    let result = planner.upload(link.clone()).await?;
+//     let result = planner.upload(link.clone()).await?;
 
-    match result {
-        MavMissionResult::MAV_MISSION_ACCEPTED => {
-            eprintln!("mission accepted");
+//     match result {
+//         MavMissionResult::MAV_MISSION_ACCEPTED => {
+//             eprintln!("mission accepted");
 
-            let arm = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-                param1: 1.0,
-                param2: 0.0,
-                command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
-                target_system: TARGET_SYSTEM_ID,
-                target_component: TARGET_COMPONENT_ID,
-                ..Default::default()
-            });
+//             let arm = Message::COMMAND_LONG(COMMAND_LONG_DATA {
+//                 param1: 1.0,
+//                 param2: 0.0,
+//                 command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+//                 target_system: TARGET_SYSTEM_ID,
+//                 target_component: TARGET_COMPONENT_ID,
+//                 ..Default::default()
+//             });
 
-            eprintln!("armed");
+//             eprintln!("armed");
 
-            let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, arm).await;
+//             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, arm).await;
 
-            let mission_start = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-                param1: 0.0,
-                param2: 0.0,
-                command: MavCmd::MAV_CMD_MISSION_START,
-                target_system: TARGET_SYSTEM_ID,
-                target_component: TARGET_COMPONENT_ID,
-                ..Default::default()
-            });
+//             let mission_start = Message::COMMAND_LONG(COMMAND_LONG_DATA {
+//                 param1: 0.0,
+//                 param2: 0.0,
+//                 command: MavCmd::MAV_CMD_MISSION_START,
+//                 target_system: TARGET_SYSTEM_ID,
+//                 target_component: TARGET_COMPONENT_ID,
+//                 ..Default::default()
+//             });
 
-            let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_start).await;
+//             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_start).await;
 
-            eprintln!("started");
-        },
-        _ => { dbg!(result); },
-    }
+//             eprintln!("started");
+//         },
+//         _ => { dbg!(result); },
+//     }
 
     let _ = tokio::join!(receive, broadcast);
 
@@ -112,7 +110,7 @@ async fn receive_messages(mut subscriber: Subscriber) {
     }
 }
 
-async fn broadcast_heartbeat(link: Arc<TcpLink>) {
+async fn broadcast_heartbeat(link: Arc<Link>) {
     loop {
         let heartbeat = Message::HEARTBEAT(HEARTBEAT_DATA {
             custom_mode: 0,
@@ -128,7 +126,7 @@ async fn broadcast_heartbeat(link: Arc<TcpLink>) {
     }
 }
 
-async fn set_message_interval(link: Arc<TcpLink>, message: u32, interval: Duration) {
+async fn set_message_interval(link: Arc<Link>, message: u32, interval: Duration) {
     let command = Message::COMMAND_INT(COMMAND_INT_DATA {
         command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
         target_system: 1,
@@ -206,7 +204,7 @@ impl MissionPlanner {
         self
     }
 
-    async fn upload(&self, link: Arc<TcpLink>) -> Result<MavMissionResult> {
+    async fn upload(&self, link: Arc<Link>) -> Result<MavMissionResult> {
         let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
             count: self.items.len() as u16,
             target_system: TARGET_SYSTEM_ID,
