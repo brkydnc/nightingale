@@ -1,6 +1,6 @@
 use std::{ sync::Arc, time::Duration};
-use tokio_util::codec::{Decoder, Framed};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio_util::codec::{FramedRead, FramedWrite};
+use tokio::net::{TcpStream, tcp::OwnedWriteHalf};
 use futures::stream::SplitSink;
 use futures::prelude::*;
 use nightingale::{
@@ -29,12 +29,15 @@ const GCS_COMPONENT_ID: u8 = 1;
 const TARGET_SYSTEM_ID: u8 = 1;
 const TARGET_COMPONENT_ID: u8 = 1;
 
-type Link = NightingaleLink<SplitSink<Framed<SerialStream, PacketCodec>, Packet>>;
+type Link = NightingaleLink<FramedWrite<OwnedWriteHalf, PacketCodec>>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let port = tokio_serial::new("/dev/ttyUSB0", 57600).open_native_async()?;
-    let (sink, stream) = PacketCodec.framed(port).split();
+    let connection = TcpStream::connect("192.168.4.1:5760").await?;
+    let (reader, writer) = connection.into_split();
+
+    let sink = FramedWrite::new(writer, PacketCodec);
+    let stream = FramedRead::new(reader, PacketCodec);
 
     let link = Arc::new(NightingaleLink::new(sink, stream));
 
@@ -99,12 +102,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
 async fn receive_messages(mut subscriber: Subscriber) {
     while let Ok(p) = subscriber.wait_for(&mut |_| true).await {
+        eprintln!("{:#?}", &p);
+
         match p.message {
-            // 0 => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
+            // Message::HEARTBEAT(_) => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
             // 51 | 47 => { eprintln!("{:#?}", p.message) },
-            Message::GLOBAL_POSITION_INT(pos) => {
-                eprintln!("lat: {}, lon: {}, alt: {}", pos.lat, pos.lon, pos.alt);
-            },
+            // Message::GLOBAL_POSITION_INT(pos) => { eprintln!("lat: {}, lon: {}, alt: {}", pos.lat, pos.lon, pos.alt); },
             _ => { }
         }
     }
@@ -123,6 +126,7 @@ async fn broadcast_heartbeat(link: Arc<Link>) {
 
         let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, heartbeat).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
+        eprintln!("[GCS] Heartbeat broadcasted.");
     }
 }
 
