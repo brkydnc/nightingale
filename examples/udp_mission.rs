@@ -28,16 +28,12 @@ const GCS_COMPONENT_ID: u8 = 1;
 const TARGET_SYSTEM_ID: u8 = 1;
 const TARGET_COMPONENT_ID: u8 = 1;
 
-const ADDR: &'static str = "192.168.4.1:14550";
-
 type UdpSink = Box<dyn Sink<Packet, Error = std::io::Error> + Send + Unpin + 'static>;
 type Link = NightingaleLink<UdpSink>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let socket = UdpSocket::bind("0.0.0.0:14550").await?;
-
-    socket.connect(ADDR);
 
     let framed = UdpFramed::new(socket, PacketCodec);
     let (split_sink, split_stream) = framed.split();
@@ -51,23 +47,25 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let receive = tokio::spawn(receive_messages(link.subscribe()));
     let broadcast = tokio::spawn(broadcast_heartbeat(link.clone()));
 
-//     // Receive GLOBAL_POSITION_INT every  seconds
-//     set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
+    // Receive GLOBAL_POSITION_INT every  seconds
+    set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
 
-//     let planner = MissionPlanner::new()
-//         .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
-//         .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
-//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-//         .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
-//         .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
-//         .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
-//         .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
-//         .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
-//         .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
-//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-//         .add(MissionItem::ReturnToLaunch);
+    let planner = MissionPlanner::new()
+        .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
+        .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
+        .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+        .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
+        .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
+        .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
+        .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
+        .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
+        .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
+        .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+        .add(MissionItem::ReturnToLaunch);
 
-//     let result = planner.upload(link.clone()).await?;
+    let result = planner.upload(link.clone()).await?;
+
+    eprintln!("[MISSION] UPLOAD_RESULT({:?})", result);
 
 //     match result {
 //         MavMissionResult::MAV_MISSION_ACCEPTED => {
@@ -109,13 +107,13 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
 async fn receive_messages(mut subscriber: Subscriber) {
     while let Ok(p) = subscriber.wait_for(&mut |_| true).await {
-        eprintln!("{:#?}", &p);
+        // eprintln!("{:#?}", &p);
 
         match p.message {
-            // Message::HEARTBEAT(_) => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
-            // 51 | 47 => { eprintln!("{:#?}", p.message) },
-            // Message::GLOBAL_POSITION_INT(pos) => { eprintln!("lat: {}, lon: {}, alt: {}", pos.lat, pos.lon, pos.alt); },
-            _ => { }
+            Message::HEARTBEAT(_) => { eprintln!("[CUBE] HEARTBEAT"); },
+            Message::GLOBAL_POSITION_INT(pos) => { eprintln!("[CUBE] GPS({}, {}, {})", pos.lat, pos.lon, pos.alt); },
+            Message::COMMAND_ACK(ack) => { eprintln!("[CUBE] ACK({:?}, {:?})", ack.command, ack.result); }
+            message => { eprintln!("[CUBE] MESSAGE: {:?}", message) },
         }
     }
 }
@@ -133,7 +131,7 @@ async fn broadcast_heartbeat(link: Arc<Link>) {
 
         let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, heartbeat).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
-        eprintln!("[GCS] Heartbeat broadcasted.");
+        eprintln!("[GCS] HEARTBEAT");
     }
 }
 
@@ -148,6 +146,7 @@ async fn set_message_interval(link: Arc<Link>, message: u32, interval: Duration)
     });
 
     let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, command).await;
+    eprintln!("[GCS] Set message interval sent.");
 }
 
 enum MissionItem {
