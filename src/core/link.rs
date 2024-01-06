@@ -1,144 +1,87 @@
 use crate::{
     dialect::{Header, Message},
-    error::{ Error, Result },
-    wire::{Packet, DecoderResult},
+    wire::Packet,
 };
 
-use std::{
-    sync::Arc,
-    time::Duration,
-    ops::{Deref, DerefMut}
-};
+use std::{pin::Pin, task::{Context, Poll}, sync::Arc};
+use tokio::sync::{ mpsc, broadcast };
+use tokio_stream::wrappers::{ReceiverStream, BroadcastStream, errors::BroadcastStreamRecvError};
+use tokio_util::sync::{ PollSender, PollSendError };
+use futures::{Future, future::join, Sink, Stream, StreamExt};
+use pin_project::pin_project;
 
-use tokio::sync::{ broadcast, Mutex };
-use futures::prelude::*;
+#[pin_project]
+pub struct Link {
+    #[pin]
+    sender: PollSender<(u8, u8, Message)>,
 
-// Packets are large. We send and receive an Arc clone instead of the packets.
-type Publisher = broadcast::Sender<Arc<Packet>>;
-
-// TODO: Maybe interop with BroadcastStream?
-pub struct Subscriber(broadcast::Receiver<Arc<Packet>>);
-
-impl Subscriber {
-    pub async fn receive(&mut self) -> Result<Arc<Packet>> {
-        self.0.recv().await.map_err(Error::from)
-    }
-
-    pub async fn wait<F>(&mut self, mut f: F) -> Result<Arc<Packet>>
-    where
-        F: FnMut(&Packet) -> bool,
-    {
-        loop {
-            let packet = self.0.recv().await?;
-            if f(&packet) {
-                break Ok(packet);
-            }
-        }
-    }
-
-    pub async fn timeout<F>(
-        &mut self,
-        mut f: F,
-        duration: Duration,
-        retries: usize
-    ) -> Result<Arc<Packet>>
-    where
-        F: FnMut(&Packet) -> bool,
-    {
-        let mut attempts = 0;
-
-        while attempts < retries {
-            match tokio::time::timeout(duration, self.wait(&mut f)).await {
-                Ok(result) => { return result; }
-                Err(_elapsed) => { attempts += 1; }
-            }
-        }
-
-        Err(Error::Timeout)
-    }
+    #[pin]
+    subscriber: BroadcastStream<Arc<Packet>>,
 }
 
-pub struct Link<T> {
-    // A generic consumer interface for outgoing MAVLink messages.
-    sink: Mutex<SequencedSink<T>>,
-
-    // Keep this here, to keep the listen task alive. Even there are no
-    // subscribers, the listener task should live until the link is dropped.
-    receiver: broadcast::Receiver<Arc<Packet>>,
-}
-
-impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
-    const CAPACITY: usize = 32;
-
-    pub fn new<U>(sink: T, stream: U) -> Self
-    where
-        U: Stream<Item = DecoderResult> + Unpin + Send + 'static,
+impl Link {
+    pub fn new<T, U>(
+        outgoing: T,
+        incoming: U
+    ) -> (Link, impl Future<Output = (Result<(), T::Error>, ())>)
+        where T: Sink<Packet>,
+              U: Stream<Item = Packet>,
     {
-        let (publisher, receiver) = broadcast::channel(Self::CAPACITY);
-        let sink = SequencedSink { sink, sequence: 0 }.into();
-        tokio::spawn(Self::listen(stream, publisher.clone()));
-        Self { sink, receiver }
-    }
+        let (sender, receiver) = mpsc::channel(64);
+        let (publisher, subscriber) = broadcast::channel(64);
 
-    pub fn subscribe(&self) -> Subscriber {
-        // For the sake of simplicity, we don't have "topics" here yet. All 
-        // subscribers receive all type of messages.
-        Subscriber(self.receiver.resubscribe())
-    }
+        // Stamp packets with a sequence number, and forward them to the sink.
+        let mut sequence = 0;
+        let forward = ReceiverStream::new(receiver)
+            .map(move |(component_id, system_id, message)| {
+                let header = Header {component_id, system_id, sequence };
+                sequence += 1;
+                Ok(Packet { header, message })
+            })
+            .forward(outgoing);
 
-    pub async fn send(&self, system_id: u8, component_id: u8, message: Message) -> Result<()> {
-        let mut sink = self.sink.lock().await;
-        let header = Header {
-            system_id,
-            component_id,
-            sequence: sink.sequence,
+        // Broadcast each incoming message.
+        let shared = Arc::new(publisher);
+        let broadcast = incoming.for_each(move |packet| {
+            let publisher = shared.clone();
+            let packet = Arc::new(packet);
+            async move { let _ = publisher.send(packet); }
+        });
+
+        let fut = join(forward, broadcast);
+        let link = Link {
+            sender: PollSender::new(sender),
+            subscriber: BroadcastStream::new(subscriber)
         };
-        let packet = Packet { header, message };
-        sink.sequence = sink.sequence.wrapping_add(1);
 
-        // TODO: is impl From<...> for Error possible here?
-        sink.send(packet).await.map_err(|_| Error::Send)
-    }
-
-    async fn listen<U>(mut stream: U, publisher: Publisher)
-    where
-        U: Stream<Item = DecoderResult> + Unpin,
-    {
-        loop {
-            match stream.next().await {
-                Some(result) => match result {
-                    Ok(packet) => {
-                        // Publish the packet. Stop the task if it fails,
-                        // it means that all receivers (including the link)
-                        // are dropped.
-                        if let Err(_) = publisher.send(Arc::new(packet)) {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        eprintln!("[INVALID_PACKET_RECEIVED] {:?}", error);
-                    }
-                },
-                None => { break }
-            }
-        }
+        (link, fut)
     }
 }
 
-struct SequencedSink<T> {
-    sink: T,
-    sequence: u8,
-}
+impl Sink<(u8, u8, Message)> for Link {
+    type Error = PollSendError<(u8, u8, Message)>;
 
-impl<T> Deref for SequencedSink<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.sink
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().sender.poll_ready(cx)
+    }
+
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().sender.poll_close(cx)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.project().sender.poll_flush(cx)
+    }
+
+    fn start_send(self: Pin<&mut Self>, item: (u8, u8, Message)) -> Result<(), Self::Error> {
+        self.project().sender.start_send(item)
     }
 }
 
-impl<T> DerefMut for SequencedSink<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.sink
+impl Stream for Link {
+    type Item = Result<Arc<Packet>, BroadcastStreamRecvError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.project().subscriber.poll_next(cx)
     }
 }

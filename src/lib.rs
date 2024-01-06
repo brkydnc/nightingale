@@ -1,4 +1,5 @@
 pub mod core;
+pub mod component;
 
 pub mod dialect {
     pub use mavlink::{MavHeader as Header, Message as MessageExt};

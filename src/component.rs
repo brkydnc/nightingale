@@ -1,30 +1,16 @@
 use crate::{
     link::Link,
-    dialect::{ MavAutopilot, MavModeFlag, MavState, MavComponent },
+    dialect::MavComponent,
 };
 
-use std::sync::Arc;
-
-struct System<T> {
-    id: u8,
-    state: MavState,
-    mode: MavModeFlag,
-    link: Arc<Link<T>>,
-}
-
-struct Component<T> {
+struct Component {
     id: MavComponent,
-    system: Arc<System<T>>,
-    autopilot: MavAutopilot,
+    system: u8,
+    link: Link,
 }
 
-impl<T> Component<T> {
-    fn new(id: MavComponent, autopilot: MavAutopilot, system: Arc<System<T>>) -> Self {
-        Self { id, autopilot, system }
+impl Component {
+    fn new(id: MavComponent, system: u8, link: Link) -> Self {
+        Self { id, system, link }
     }
-}
-
-// Command protocol implementation
-impl<T> Component<T> {
-
 }
