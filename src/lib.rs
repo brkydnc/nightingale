@@ -1,7 +1,4 @@
-// pub mod command;
-pub mod error;
-pub mod link;
-pub mod wire;
+pub mod core;
 
 pub mod dialect {
     pub use mavlink::{MavHeader as Header, Message as MessageExt};
@@ -10,3 +7,5 @@ pub mod dialect {
 
     pub type MessageId = u32;
 }
+
+pub use core::*;
