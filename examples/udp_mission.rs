@@ -23,8 +23,6 @@ use nightingale::{
     }
 };
 
-const GCS_SYSTEM_ID: u8 = 255;
-const GCS_COMPONENT_ID: u8 = 1;
 const TARGET_SYSTEM_ID: u8 = 1;
 const TARGET_COMPONENT_ID: u8 = 1;
 
