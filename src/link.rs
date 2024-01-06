@@ -1,37 +1,89 @@
 use crate::{
-    dialect::{Header, Message, MessageId},
+    dialect::{Header, Message},
     error::{ Error, Result },
-    wire::Packet,
+    wire::{Packet, DecoderResult},
 };
 
-use futures::prelude::*;
-use mavlink::Message as MessageTrait;
 use std::{
     sync::Arc,
     time::Duration,
     ops::{Deref, DerefMut}
 };
-use tokio::sync::{ watch, Mutex };
+
+use tokio::sync::{ broadcast, Mutex };
+use futures::prelude::*;
+
+// Packets are large. We send and receive an Arc clone instead of the packets.
+type Publisher = broadcast::Sender<Arc<Packet>>;
+
+// TODO: Maybe interop with BroadcastStream?
+pub struct Subscriber(broadcast::Receiver<Arc<Packet>>);
+
+impl Subscriber {
+    pub async fn receive(&mut self) -> Result<Arc<Packet>> {
+        self.0.recv().await.map_err(Error::from)
+    }
+
+    pub async fn wait<F>(&mut self, mut f: F) -> Result<Arc<Packet>>
+    where
+        F: FnMut(&Packet) -> bool,
+    {
+        loop {
+            let packet = self.0.recv().await?;
+            if f(&packet) {
+                break Ok(packet);
+            }
+        }
+    }
+
+    pub async fn timeout<F>(
+        &mut self,
+        mut f: F,
+        duration: Duration,
+        retries: usize
+    ) -> Result<Arc<Packet>>
+    where
+        F: FnMut(&Packet) -> bool,
+    {
+        let mut attempts = 0;
+
+        while attempts < retries {
+            match tokio::time::timeout(duration, self.wait(&mut f)).await {
+                Ok(result) => { return result; }
+                Err(_elapsed) => { attempts += 1; }
+            }
+        }
+
+        Err(Error::Timeout)
+    }
+}
 
 pub struct Link<T> {
+    // A generic consumer interface for outgoing MAVLink messages.
     sink: Mutex<SequencedSink<T>>,
-    subscriber: Subscriber,
+
+    // Keep this here, to keep the listen task alive. Even there are no
+    // subscribers, the listener task should live until the link is dropped.
+    receiver: broadcast::Receiver<Arc<Packet>>,
 }
 
 impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
+    const CAPACITY: usize = 32;
+
     pub fn new<U>(sink: T, stream: U) -> Self
     where
         U: Stream<Item = DecoderResult> + Unpin + Send + 'static,
     {
-        let (publisher, subscriber) = watch::channel(Default::default());
-        let subscriber = Subscriber(subscriber);
+        let (publisher, receiver) = broadcast::channel(Self::CAPACITY);
         let sink = SequencedSink { sink, sequence: 0 }.into();
-        tokio::spawn(Self::receiver(stream, publisher));
-        Self { sink, subscriber }
+        tokio::spawn(Self::listen(stream, publisher.clone()));
+        Self { sink, receiver }
     }
 
     pub fn subscribe(&self) -> Subscriber {
-        self.subscriber.clone()
+        // For the sake of simplicity, we don't have "topics" here yet. All 
+        // subscribers receive all type of messages.
+        Subscriber(self.receiver.resubscribe())
     }
 
     pub async fn send(&self, system_id: u8, component_id: u8, message: Message) -> Result<()> {
@@ -48,7 +100,7 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
         sink.send(packet).await.map_err(|_| Error::Send)
     }
 
-    async fn receiver<U>(mut stream: U, publisher: Publisher)
+    async fn listen<U>(mut stream: U, publisher: Publisher)
     where
         U: Stream<Item = DecoderResult> + Unpin,
     {
@@ -59,7 +111,7 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
                         // Publish the packet. Stop the task if it fails,
                         // it means that all receivers (including the link)
                         // are dropped.
-                        if let Err(_) = publisher.send(packet) {
+                        if let Err(_) = publisher.send(Arc::new(packet)) {
                             break;
                         }
                     }
@@ -70,80 +122,6 @@ impl<T: Sink<Packet> + Unpin + 'static> Link<T> {
                 None => { break }
             }
         }
-    }
-}
-
-
-impl<T: Sink<Packet> + Unpin + Send + 'static> Link<T> {
-    pub fn spawn_send(
-        self: Arc<Self>,
-        sysid: u8,
-        cmpid: u8,
-        msg: Message
-    ) -> tokio::task::JoinHandle<Result<()>> {
-        tokio::spawn(async move { self.send(sysid, cmpid, msg).await })
-    }
-}
-
-type DecoderResult = std::result::Result<Packet, std::io::Error>;
-
-type Publisher = watch::Sender<Packet>;
-
-#[derive(Clone)]
-pub struct Subscriber(watch::Receiver<Packet>);
-
-impl Subscriber {
-    // TODO: &mut F or F?
-    pub async fn wait_for<F>(&mut self, f: &mut F) -> Result<Packet>
-    where
-        F: FnMut(&Packet) -> bool,
-    {
-        loop {
-            self.0.changed().await?;
-            let packet = self.0.borrow();
-            if f(&packet) {
-                break Ok(packet.clone());
-            }
-        }
-    }
-
-    pub async fn timeout_for<F>(
-        &mut self,
-        f: &mut F,
-        duration: Duration,
-        retries: usize
-    ) -> Option<Result<Packet>>
-    where
-        F: FnMut(&Packet) -> bool,
-    {
-        let mut attempts = 0;
-
-        while attempts < retries {
-            match tokio::time::timeout(duration, self.wait_for(f)).await {
-                Ok(result) => { return Some(result); }
-                Err(_elapsed) => { attempts += 1; }
-            }
-        }
-
-        None
-    }
-
-    pub async fn wait_for_message(&mut self, id: MessageId) -> Result<Packet> {
-        self.wait_for(&mut |packet| packet.message.message_id() == id)
-            .await
-    }
-}
-
-impl Deref for Subscriber {
-    type Target = watch::Receiver<Packet>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Subscriber {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 

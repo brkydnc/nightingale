@@ -1,13 +1,13 @@
 use std::io::Error as IoError;
-use tokio::sync::watch::error::RecvError;
+use tokio::sync::broadcast::error::RecvError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
 pub enum Error {
     Io(IoError),
+    Recv(RecvError),
     Send,
-    Receive,
     Timeout,
 }
 
@@ -26,7 +26,7 @@ impl From<IoError> for Error {
 }
 
 impl From<RecvError> for Error {
-    fn from(_: RecvError) -> Self {
-        Error::Receive
+    fn from(err: RecvError) -> Self {
+        Error::Recv(err)
     }
 }

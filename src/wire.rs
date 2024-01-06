@@ -10,6 +10,8 @@ use tokio_util::{
 
 use crc16::{State, MCRF4XX};
 
+pub type DecoderResult = std::result::Result<Packet, std::io::Error>;
+
 #[derive(Debug, Clone)]
 pub struct Packet {
     pub header: Header,
