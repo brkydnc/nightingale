@@ -1,4 +1,5 @@
 use crate::{ dialect::{Header, Message}, wire::Packet };
+
 use async_broadcast::{self as broadcast };
 use flume::{SendError, r#async::SendSink};
 use std::{pin::Pin, task::{Context, Poll}, sync::Arc};
@@ -9,7 +10,7 @@ use pin_project::pin_project;
 #[pin_project]
 pub struct Link {
     #[pin]
-    sender: SendSink<'static, (u8, u8, Message)>,
+    sender: SendSink<'static, Message>,
 
     #[pin]
     subscriber: broadcast::Receiver<Arc<Packet>>,
@@ -18,7 +19,9 @@ pub struct Link {
 impl Link {
     pub fn new<T, U>(
         outgoing: T,
-        incoming: U
+        incoming: U,
+        system_id: u8,
+        component_id: u8,
     ) -> (Link, impl Future<Output = (Result<(), T::Error>, ())>)
         where T: Sink<Packet>,
               U: Stream<Item = Packet>,
@@ -41,7 +44,7 @@ impl Link {
         let mut sequence = 0;
         let forward = receiver
             .into_stream()
-            .map(move |(component_id, system_id, message)| {
+            .map(move |message| {
                 let header = Header {component_id, system_id, sequence };
                 sequence += 1;
                 Ok(Packet { header, message })
@@ -55,8 +58,8 @@ impl Link {
     }
 }
 
-impl Sink<(u8, u8, Message)> for Link {
-    type Error = SendError<(u8, u8, Message)>;
+impl Sink<Message> for Link {
+    type Error = SendError<Message>;
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.project().sender.poll_ready(cx)
@@ -70,7 +73,7 @@ impl Sink<(u8, u8, Message)> for Link {
         self.project().sender.poll_flush(cx)
     }
 
-    fn start_send(self: Pin<&mut Self>, item: (u8, u8, Message)) -> Result<(), Self::Error> {
+    fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         self.project().sender.start_send(item)
     }
 }
