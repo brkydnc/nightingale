@@ -1,8 +1,4 @@
-use crate::dialect::{
-    MavCmd,
-    MavFrame,
-    MISSION_ITEM_INT_DATA as RawMissionItem,
-};
+use crate::dialect::{MavCmd, MavFrame, MISSION_ITEM_INT_DATA as RawMissionItem};
 
 pub struct MissionPlanner {
     items: Vec<MissionItem>,
@@ -13,12 +9,12 @@ impl MissionPlanner {
         Self { items: Vec::new() }
     }
 
-    pub fn add(mut self, item: MissionItem) -> Self {
+    pub fn item(mut self, item: MissionItem) -> Self {
         self.items.push(item);
         self
     }
 
-    pub fn get(&self, system: u8, component: u8) -> Vec<RawMissionItem> {
+    pub fn create(&self, system: u8, component: u8) -> Vec<RawMissionItem> {
         self.items
             .iter()
             .enumerate()
@@ -37,10 +33,12 @@ impl MissionItem {
     fn raw(&self, system: u8, component: u8, seq: u16) -> RawMissionItem {
         use MissionItem::*;
 
-        fn scale(f: f32) -> i32 { (f * 1e7) as i32 }
+        fn scale(f: f32) -> i32 {
+            (f * 1e7) as i32
+        }
 
-        match self {
-            &Waypoint(lat, lon, alt) => RawMissionItem {
+        match *self {
+            Waypoint(lat, lon, alt) => RawMissionItem {
                 seq,
                 command: MavCmd::MAV_CMD_NAV_WAYPOINT,
                 param4: f32::NAN,
@@ -53,7 +51,7 @@ impl MissionItem {
                 frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                 ..Default::default()
             },
-            &Takeoff(lat, lon, alt) => RawMissionItem {
+            Takeoff(lat, lon, alt) => RawMissionItem {
                 seq,
                 command: MavCmd::MAV_CMD_NAV_TAKEOFF,
                 param4: f32::NAN,
@@ -66,7 +64,7 @@ impl MissionItem {
                 frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
                 ..Default::default()
             },
-            &ReturnToLaunch => RawMissionItem {
+            ReturnToLaunch => RawMissionItem {
                 seq,
                 command: MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
                 autocontinue: true as u8,
@@ -74,7 +72,7 @@ impl MissionItem {
                 target_component: component,
                 frame: MavFrame::MAV_FRAME_MISSION,
                 ..Default::default()
-            }
+            },
         }
     }
 }

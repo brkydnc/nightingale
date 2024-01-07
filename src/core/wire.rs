@@ -126,13 +126,13 @@ impl Decoder for PacketCodec {
             src.advance(packet_size);
 
             // Return valid packet.
-            return Ok(Some(packet));
+            Ok(Some(packet))
         } else {
             // Clear the current packet.
             src.advance(packet_size);
 
             // Return invalid CRC error.
-            return Err(Error::new(InvalidData, "Invalid CRC."));
+            Err(Error::new(InvalidData, "Invalid CRC."))
         }
     }
 }

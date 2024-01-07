@@ -1,77 +1,69 @@
 use crate::{
-    link::Link,
     dialect::{
-        Message,
-        MavComponent,
-        MavMissionResult,
-        MISSION_COUNT_DATA,
+        MavComponent, MavMissionResult, Message, MISSION_COUNT_DATA,
         MISSION_ITEM_DATA as RawMissionItem,
     },
+    error::Result,
+    link::Link,
+    wire::Packet,
 };
+use std::time::Duration;
 
-struct Component {
+pub struct Component {
     id: u8,
     system: u8,
     link: Link,
 }
 
 impl Component {
-    fn new(component: MavComponent, system: u8, link: Link) -> Self {
-        Self { id: component as u8, system, link }
+    pub fn new(component: MavComponent, system: u8, link: Link) -> Self {
+        Self {
+            id: component as u8,
+            system,
+            link,
+        }
     }
 
-    fn upload_mission(&mut self, items: &[RawMissionItem]) {
-        // let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
-        //     count: items.len() as u16,
-        //     target_system: self.system,
-        //     target_component: self.id,
-        // });
+    pub async fn upload_mission(&mut self, items: &[RawMissionItem]) -> Result<MavMissionResult> {
+        use Message::{
+            MISSION_ACK as Ack, MISSION_ITEM as Item, MISSION_ITEM as ItemInt,
+            MISSION_REQUEST as Request, MISSION_REQUEST_INT as RequestInt,
+        };
 
-        // let retries = 5;
-        // let duration = Duration::from_millis(1500);
-        // let capture_ack_or_req = &mut |p: &Packet| {
-        //     let id = p.message.message_id();
-        //     // Receive MISSION_REQUEST_INT or MISSION_REQUEST (deprecated )or MISSION_ACK
-        //     id == 51 || id == 40 || id == 47
-        // };
+        let filter = |p: &Packet| matches!(p.message, Request(_) | RequestInt(_) | Ack(_));
 
-        // link
-        //     .clone()
-        //     .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_count);
+        let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
+            count: items.len() as u16,
+            target_system: self.system,
+            target_component: self.id,
+        });
 
-        // let mission_result = loop {
-        //     // XXX: This does not see simultaneous sends.
-        //     let packet = subscriber
-        //         .timeout_for(capture_ack_or_req, duration, retries)
-        //         .await
-        //         .ok_or(Error::Timeout)??;
+        self.link.send_message(mission_count).await?;
 
-        //     match packet.message {
-        //         Message::MISSION_REQUEST(req) => {
-        //             // TODO: Handle invalid seq (seq < items.len());
-        //             let data = &self.items[req.seq as usize];
-        //             let mission_item = Message::MISSION_ITEM_INT(data.clone());
+        let mission_result = loop {
+            let packet = self
+                .link
+                .timeout(filter, Duration::from_millis(1500), 5)
+                .await?;
 
-        //             link
-        //                 .clone()
-        //                 .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-        //         },
-        //         Message::MISSION_REQUEST_INT(req) => {
-        //             // TODO: Handle invalid seq (seq < items.len());
-        //             let data = &self.items[req.seq as usize];
-        //             let mission_item = Message::MISSION_ITEM_INT(data.clone());
+            match &packet.message {
+                Request(req) => {
+                    let seq = req.seq as usize;
+                    let mission_item = Item(items[seq].clone());
+                    self.link.send_message(mission_item).await?;
+                }
+                RequestInt(req) => {
+                    let seq = req.seq as usize;
+                    let mission_item = ItemInt(items[seq].clone());
+                    self.link.send_message(mission_item).await?;
+                }
+                Ack(ack) => {
+                    break ack.mavtype;
+                }
+                _ => unreachable!(),
+            }
+        };
 
-        //             link
-        //                 .clone()
-        //                 .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-        //         },
-        //         Message::MISSION_ACK(ack) => {
-        //             break ack.mavtype;
-        //         },
-        //         _ => unreachable!(),
-        //     }
-        // };
-
-        // Ok(mission_result)
+        Ok(mission_result)
     }
 }

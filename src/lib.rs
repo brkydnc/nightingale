@@ -1,5 +1,5 @@
-pub mod core;
 pub mod component;
+pub mod core;
 pub mod mission;
 
 pub mod dialect {
