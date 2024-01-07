@@ -1,106 +1,109 @@
-use futures::prelude::*;
-use futures::stream::SplitSink;
+use futures::{future, SinkExt, StreamExt};
+use tokio_util::codec::Decoder;
+use tokio_serial::SerialPortBuilderExt;
 use nightingale::{
+    component::Component,
     dialect::{
-        MavAutopilot, MavCmd, MavFrame, MavMissionResult, MavModeFlag, MavState, MavType, Message,
-        MessageExt, COMMAND_INT_DATA, HEARTBEAT_DATA, MISSION_COUNT_DATA,
-        MISSION_ITEM_INT_DATA as RawMissionItem,
+        MavCmd, MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
+        MavResult::MAV_RESULT_ACCEPTED as Accepted, COMMAND_LONG_DATA as CommandLong,
     },
-    error::{Error, Result},
-    link::{Link as NightingaleLink, Subscriber},
-    wire::{Packet, PacketCodec},
+    link::Link,
+    mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
+    wire::PacketCodec,
 };
-use std::{sync::Arc, time::Duration};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
-use tokio_util::codec::{Decoder, Framed};
 
 const GCS_SYSTEM_ID: u8 = 255;
 const GCS_COMPONENT_ID: u8 = 1;
-const TARGET_SYSTEM_ID: u8 = 1;
-const TARGET_COMPONENT_ID: u8 = 1;
-
-type Link = NightingaleLink<SplitSink<Framed<SerialStream, PacketCodec>, Packet>>;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Create a Serial connection, and split it into two halves.
     let port = tokio_serial::new("/dev/ttyUSB0", 57600).open_native_async()?;
     let (sink, stream) = PacketCodec.framed(port).split();
 
-    let link = Arc::new(NightingaleLink::new(sink, stream));
+    // Ignore invalid packets.
+    let stream = stream.filter_map(|result| future::ready(result.ok()));
 
-    let receive = tokio::spawn(receive_messages(link.subscribe()));
-    let broadcast = tokio::spawn(broadcast_heartbeat(link.clone()));
+    // Create a new link.
+    let (link, connection) = Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID);
 
-    //     // Receive GLOBAL_POSITION_INT every  seconds
-    //     set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
+    // Broadcast GCS hearbeat to the link.
+    let broadcast = broadcast_heartbeat(link.clone());
 
-    //     let planner = MissionPlanner::new()
-    //         .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
-    //         .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
-    //         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-    //         .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
-    //         .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
-    //         .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
-    //         .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
-    //         .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
-    //         .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
-    //         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-    //         .add(MissionItem::ReturnToLaunch);
+    // Spawn connection and broadcast tasks.
+    let tasks = tokio::spawn(future::join(connection, broadcast));
 
-    //     let result = planner.upload(link.clone()).await?;
+    // Create a component for drone's autopilot.
+    let mut autopilot = Component::new(1, 1, link);
 
-    //     match result {
-    //         MavMissionResult::MAV_MISSION_ACCEPTED => {
-    //             eprintln!("mission accepted");
+    let mission_items = [
+        Waypoint(38.37061710, 27.20081034, 50.0),
+        Takeoff(38.37061710, 27.20081034, 50.0),
+        Waypoint(38.37052632, 27.20105989, 50.0),
+        Waypoint(38.37066650, 27.20113415, 50.0),
+        Waypoint(38.37089135, 27.20093708, 50.0),
+        Waypoint(38.37086087, 27.20060531, 50.0),
+        Waypoint(38.37053004, 27.20043123, 50.0),
+        Waypoint(38.37034030, 27.20065871, 50.0),
+        Waypoint(38.37037796, 27.20098516, 50.0),
+        Waypoint(38.37052632, 27.20105989, 50.0),
+        ReturnToLaunch,
+    ];
 
-    //             let arm = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-    //                 param1: 1.0,
-    //                 param2: 0.0,
-    //                 command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
-    //                 target_system: TARGET_SYSTEM_ID,
-    //                 target_component: TARGET_COMPONENT_ID,
-    //                 ..Default::default()
-    //             });
+    eprintln!("Uploading the mission...");
+    let mission_result = autopilot.upload_mission(mission_items).await?;
 
-    //             eprintln!("armed");
+    match mission_result {
+        MissionAccepted => eprintln!("The mission is accepted!"),
+        reason => panic!(
+            "The drone didn't accept the mission [{:?}], aborting..",
+            reason
+        ),
+    }
 
-    //             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, arm).await;
+    let arm = CommandLong {
+        param1: 1.0,
+        command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+        ..Default::default()
+    };
 
-    //             let mission_start = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-    //                 param1: 0.0,
-    //                 param2: 0.0,
-    //                 command: MavCmd::MAV_CMD_MISSION_START,
-    //                 target_system: TARGET_SYSTEM_ID,
-    //                 target_component: TARGET_COMPONENT_ID,
-    //                 ..Default::default()
-    //             });
+    eprintln!("Arming the drone...");
+    let arm_result = autopilot.command_long(arm).await?;
 
-    //             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_start).await;
+    match arm_result {
+        Accepted => eprintln!("The drone is armed!"),
+        reason => panic!(
+            "The drone didn't accept the command [{:?}], aborting..",
+            reason
+        ),
+    }
 
-    //             eprintln!("started");
-    //         },
-    //         _ => { dbg!(result); },
-    //     }
+    let start = CommandLong {
+        command: MavCmd::MAV_CMD_MISSION_START,
+        ..Default::default()
+    };
 
-    let _ = tokio::join!(receive, broadcast);
+    eprintln!("Starting the mission.");
+    let start_result = autopilot.command_long(start).await?;
+
+    match start_result {
+        Accepted => eprintln!("The mission has started!"),
+        reason => panic!(
+            "The drone didn't accept the command [{:?}], aborting..",
+            reason
+        ),
+    }
+
+    let _ = tasks.await;
 
     Ok(())
 }
 
-async fn receive_messages(mut subscriber: Subscriber) {
-    while let Ok(p) = subscriber.wait_for(&mut |_| true).await {
-        eprintln!("{:#?}", &p);
+async fn broadcast_heartbeat(mut link: Link) {
+    use nightingale::dialect::{
+        MavAutopilot, MavModeFlag, MavState, MavType, Message, HEARTBEAT_DATA,
+    };
 
-        match p.message {
-            // Message::HEARTBEAT(_) => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
-            // 51 | 47 => { eprintln!("{:#?}", p.message) },
-            // Message::GLOBAL_POSITION_INT(pos) => { eprintln!("lat: {}, lon: {}, alt: {}", pos.lat, pos.lon, pos.alt); },
-            _ => {}
-        }
-    }
-}
-
-async fn broadcast_heartbeat(link: Arc<Link>) {
     loop {
         let heartbeat = Message::HEARTBEAT(HEARTBEAT_DATA {
             custom_mode: 0,
@@ -112,143 +115,7 @@ async fn broadcast_heartbeat(link: Arc<Link>) {
             mavlink_version: 3,
         });
 
-        let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, heartbeat).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        eprintln!("[GCS] Heartbeat broadcasted.");
-    }
-}
-
-async fn set_message_interval(link: Arc<Link>, message: u32, interval: Duration) {
-    let command = Message::COMMAND_INT(COMMAND_INT_DATA {
-        command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
-        target_system: 1,
-        target_component: 0,
-        param1: message as f32,
-        param2: interval.as_micros() as f32,
-        ..Default::default()
-    });
-
-    let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, command).await;
-}
-
-enum MissionItem {
-    Waypoint(f32, f32, f32),
-    Takeoff(f32, f32, f32),
-    ReturnToLaunch,
-}
-
-impl MissionItem {
-    fn raw(self) -> RawMissionItem {
-        use MissionItem::*;
-
-        fn scale(f: f32) -> i32 {
-            (f * 1e7) as i32
-        }
-
-        match self {
-            Waypoint(lat, lon, alt) => RawMissionItem {
-                command: MavCmd::MAV_CMD_NAV_WAYPOINT,
-                param4: f32::NAN,
-                x: scale(lat),
-                y: scale(lon),
-                z: alt,
-                autocontinue: true as u8,
-                target_system: TARGET_SYSTEM_ID,
-                target_component: TARGET_COMPONENT_ID,
-                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                ..Default::default()
-            },
-            Takeoff(lat, lon, alt) => RawMissionItem {
-                command: MavCmd::MAV_CMD_NAV_TAKEOFF,
-                param4: f32::NAN,
-                x: scale(lat),
-                y: scale(lon),
-                z: alt,
-                autocontinue: true as u8,
-                target_system: TARGET_SYSTEM_ID,
-                target_component: TARGET_COMPONENT_ID,
-                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                ..Default::default()
-            },
-            ReturnToLaunch => RawMissionItem {
-                command: MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
-                autocontinue: true as u8,
-                target_system: TARGET_SYSTEM_ID,
-                target_component: TARGET_COMPONENT_ID,
-                frame: MavFrame::MAV_FRAME_MISSION,
-                ..Default::default()
-            },
-        }
-    }
-}
-
-struct MissionPlanner {
-    items: Vec<RawMissionItem>,
-}
-
-impl MissionPlanner {
-    fn new() -> Self {
-        Self { items: Vec::new() }
-    }
-
-    fn add(mut self, item: MissionItem) -> Self {
-        let mut raw = item.raw();
-        raw.seq = self.items.len() as u16;
-        self.items.push(raw);
-        self
-    }
-
-    async fn upload(&self, link: Arc<Link>) -> Result<MavMissionResult> {
-        let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
-            count: self.items.len() as u16,
-            target_system: TARGET_SYSTEM_ID,
-            target_component: TARGET_COMPONENT_ID,
-        });
-
-        let mut subscriber = link.subscribe();
-
-        let retries = 5;
-        let duration = Duration::from_millis(1500);
-        let capture_ack_or_req = &mut |p: &Packet| {
-            let id = p.message.message_id();
-            // Receive MISSION_REQUEST_INT or MISSION_REQUEST (deprecated )or MISSION_ACK
-            id == 51 || id == 40 || id == 47
-        };
-
-        link.clone()
-            .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_count);
-
-        let mission_result = loop {
-            // XXX: This does not see simultaneous sends.
-            let packet = subscriber
-                .timeout_for(capture_ack_or_req, duration, retries)
-                .await
-                .ok_or(Error::Timeout)??;
-
-            match packet.message {
-                Message::MISSION_REQUEST(req) => {
-                    // TODO: Handle invalid seq (seq < items.len());
-                    let data = &self.items[req.seq as usize];
-                    let mission_item = Message::MISSION_ITEM_INT(data.clone());
-
-                    link.clone()
-                        .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-                }
-                Message::MISSION_REQUEST_INT(req) => {
-                    // TODO: Handle invalid seq (seq < items.len());
-                    let data = &self.items[req.seq as usize];
-                    let mission_item = Message::MISSION_ITEM_INT(data.clone());
-
-                    link.clone()
-                        .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-                }
-                Message::MISSION_ACK(ack) => {
-                    break ack.mavtype;
-                }
-                _ => unreachable!(),
-            }
-        };
-
-        Ok(mission_result)
+        let _ = link.send(heartbeat).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
