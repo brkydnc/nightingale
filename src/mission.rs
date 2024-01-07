@@ -1,6 +1,5 @@
 use crate::dialect::{
-    MavCmd, MavFrame,
-    MISSION_ITEM_DATA as RawMissionItem,
+    MavCmd, MavFrame, MISSION_ITEM_DATA as RawMissionItem,
     MISSION_ITEM_INT_DATA as RawMissionItemInt,
 };
 

@@ -1,11 +1,18 @@
-use std::time::Duration;
 use crate::{
-    dialect::{MavMissionResult, Message, MISSION_COUNT_DATA },
-    error::Result,
+    dialect::{
+        MavMissionResult, MavResult, Message, COMMAND_INT_DATA as CommandInt,
+        COMMAND_LONG_DATA as CommandLong, MISSION_COUNT_DATA,
+    },
+    error::{Error, Result},
     link::Link,
-    wire::Packet,
     mission::IntoMissionItem,
+    wire::Packet,
 };
+use futures::{future::ready, StreamExt};
+use futures_time::{
+    stream::StreamExt as FuturesTimeStreamExt, time::Duration as FuturesTimeDuration,
+};
+use std::{sync::Arc, time::Duration};
 
 pub struct Component {
     id: u8,
@@ -18,20 +25,78 @@ impl Component {
         Self { id, system, link }
     }
 
-    pub fn id(&self) -> u8 {
-        self.id
-    }
-
-    pub fn system(&self) -> u8 {
-        self.system
-    }
-
-    pub async fn upload_mission<M, I>(
+    async fn timeout<F>(
         &mut self,
-        mission: M,
-    ) -> Result<MavMissionResult>
-        where M: AsRef<[I]>,
-              I: IntoMissionItem,
+        mut filter: F,
+        duration: Duration,
+        mut retries: usize,
+    ) -> Result<Arc<Packet>>
+    where
+        F: FnMut(&Packet) -> bool,
+    {
+        while retries > 0 {
+            let incoming = (&mut self.link)
+                .filter(|p| {
+                    ready(p.header.system_id == self.system && p.header.component_id == self.id)
+                })
+                .filter(|p| ready(filter(p)))
+                .timeout(FuturesTimeDuration::from(duration))
+                .next()
+                .await;
+
+            if let Some(Ok(packet)) = incoming {
+                return Ok(packet);
+            } else {
+                retries -= 1;
+            }
+        }
+
+        Err(Error::Timeout)
+    }
+
+    // TODO: Check command.ack.command == command.
+    // TODO: We need packet routing (target system id matches, blah blah).
+    // XXX: COMMAND_ACK_DATA Does not include target_system unless it has
+    //      serde feature flag.
+    pub async fn command_int(&mut self, mut command: CommandInt) -> Result<MavResult> {
+        command.target_system = self.system;
+        command.target_component = self.id;
+
+        let filter = |packet: &Packet| matches!(packet.message, Message::COMMAND_ACK(_));
+
+        self.link
+            .send_message(Message::COMMAND_INT(command))
+            .await?;
+        let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
+
+        match &packet.message {
+            Message::COMMAND_ACK(ack) => Ok(ack.result),
+            _ => unreachable!(),
+        }
+    }
+
+    // TODO: Currently, this is how command_int works, implement long command protocol here.
+    pub async fn command_long(&mut self, mut command: CommandLong) -> Result<MavResult> {
+        command.target_system = self.system;
+        command.target_component = self.id;
+
+        let filter = |packet: &Packet| matches!(packet.message, Message::COMMAND_ACK(_));
+
+        self.link
+            .send_message(Message::COMMAND_LONG(command))
+            .await?;
+        let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
+
+        match &packet.message {
+            Message::COMMAND_ACK(ack) => Ok(ack.result),
+            _ => unreachable!(),
+        }
+    }
+
+    pub async fn upload_mission<M, I>(&mut self, mission: M) -> Result<MavMissionResult>
+    where
+        M: AsRef<[I]>,
+        I: IntoMissionItem,
     {
         use Message::{
             MISSION_ACK as Ack, MISSION_ITEM as Item, MISSION_ITEM_INT as ItemInt,
@@ -50,22 +115,17 @@ impl Component {
         self.link.send_message(mission_count).await?;
 
         let mission_result = loop {
-            let packet = self
-                .link
-                .timeout(filter, Duration::from_millis(1500), 5)
-                .await?;
+            let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
 
             match &packet.message {
                 Request(req) => {
-                    let item = items[req.seq as usize]
-                        .with(self.system, self.id, req.seq);
+                    let item = items[req.seq as usize].with(self.system, self.id, req.seq);
 
                     let mission_item = Item(item);
                     self.link.send_message(mission_item).await?;
                 }
                 RequestInt(req) => {
-                    let item = items[req.seq as usize]
-                        .with_int(self.system, self.id, req.seq);
+                    let item = items[req.seq as usize].with_int(self.system, self.id, req.seq);
 
                     let mission_item = ItemInt(item);
                     self.link.send_message(mission_item).await?;

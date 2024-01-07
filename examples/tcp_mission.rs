@@ -2,10 +2,11 @@ use futures::{future, SinkExt, StreamExt};
 use nightingale::{
     component::Component,
     dialect::{
-        MavAutopilot, MavModeFlag, MavState, MavType, Message, HEARTBEAT_DATA,
+        MavCmd, MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
+        MavResult::MAV_RESULT_ACCEPTED as Accepted, COMMAND_LONG_DATA as CommandLong,
     },
     link::Link,
-    mission::MissionItem::{Waypoint, Takeoff, ReturnToLaunch},
+    mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
     wire::PacketCodec,
 };
 use tokio::net::TcpStream;
@@ -23,18 +24,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // Create sink & streams for the link, ignore invalid packets with filter_map.
     let sink = FramedWrite::new(writer, PacketCodec);
-    let stream = FramedRead::new(reader, PacketCodec)
-        .filter_map(|result| future::ready(result.ok()));
+    let stream =
+        FramedRead::new(reader, PacketCodec).filter_map(|result| future::ready(result.ok()));
 
     // Create a new link.
     let (link, connection) = Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID);
 
-    // Receive and broadcast heartbeat.
-    let receive = receive_messages(link.clone());
+    // Broadcast GCS hearbeat to the link.
     let broadcast = broadcast_heartbeat(link.clone());
 
-    // Spawn background tasks.
-    let tasks = tokio::spawn(future::join3(connection, receive, broadcast));
+    // Spawn connection and broadcast tasks.
+    let tasks = tokio::spawn(future::join(connection, broadcast));
 
     // Create a component for drone's autopilot.
     let mut autopilot = Component::new(1, 1, link);
@@ -53,25 +53,60 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ReturnToLaunch,
     ];
 
-    let result = autopilot.upload_mission(mission_items).await?;
+    eprintln!("Uploading the mission...");
+    let mission_result = autopilot.upload_mission(mission_items).await?;
 
-    dbg!(result);
+    match mission_result {
+        MissionAccepted => eprintln!("The mission is accepted!"),
+        reason => panic!(
+            "The drone didn't accept the mission [{:?}], aborting..",
+            reason
+        ),
+    }
+
+    let arm = CommandLong {
+        param1: 1.0,
+        command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+        ..Default::default()
+    };
+
+    eprintln!("Arming the drone...");
+    let arm_result = autopilot.command_long(arm).await?;
+
+    match arm_result {
+        Accepted => eprintln!("The drone is armed!"),
+        reason => panic!(
+            "The drone didn't accept the command [{:?}], aborting..",
+            reason
+        ),
+    }
+
+    let start = CommandLong {
+        command: MavCmd::MAV_CMD_MISSION_START,
+        ..Default::default()
+    };
+
+    eprintln!("Starting the mission.");
+    let start_result = autopilot.command_long(start).await?;
+
+    match start_result {
+        Accepted => eprintln!("The mission has started!"),
+        reason => panic!(
+            "The drone didn't accept the command [{:?}], aborting..",
+            reason
+        ),
+    }
 
     let _ = tasks.await;
 
     Ok(())
 }
 
-async fn receive_messages(mut link: Link) {
-    while let Some(p) = link.next().await {
-        match p.message {
-            Message::HEARTBEAT(_) => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
-            _ => {}
-        }
-    }
-}
-
 async fn broadcast_heartbeat(mut link: Link) {
+    use nightingale::dialect::{
+        MavAutopilot, MavModeFlag, MavState, MavType, Message, HEARTBEAT_DATA,
+    };
+
     loop {
         let heartbeat = Message::HEARTBEAT(HEARTBEAT_DATA {
             custom_mode: 0,
@@ -85,6 +120,5 @@ async fn broadcast_heartbeat(mut link: Link) {
 
         let _ = link.send(heartbeat).await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        eprintln!("[GCS] Heartbeat broadcasted.");
     }
 }

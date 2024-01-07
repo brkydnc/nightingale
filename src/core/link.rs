@@ -5,10 +5,9 @@ use crate::{
 };
 use async_broadcast::{self as broadcast};
 use futures::{
-    future::{join, ready, Future},
+    future::{join, Future},
     Sink, Stream, StreamExt,
 };
-use futures_time::{stream::StreamExt as TimeStreamExt, time::Duration};
 use std::{
     pin::Pin,
     sync::Arc,
@@ -17,6 +16,8 @@ use std::{
 
 #[derive(Clone)]
 pub struct Link {
+    system_id: u8,
+    component_id: u8,
     subscriber: broadcast::Receiver<Arc<Packet>>,
     sender: flume::Sender<Message>,
 }
@@ -67,7 +68,12 @@ impl Link {
             .forward(outgoing);
 
         let fut = join(forward, broadcast);
-        let link = Link { sender, subscriber };
+        let link = Link {
+            sender,
+            subscriber,
+            system_id,
+            component_id,
+        };
 
         (link, fut)
     }
@@ -76,30 +82,12 @@ impl Link {
         self.sender.send_async(message).await.map_err(From::from)
     }
 
-    pub async fn timeout<F>(
-        &mut self,
-        mut filter: F,
-        duration: std::time::Duration,
-        mut retries: usize,
-    ) -> Result<Arc<Packet>>
-    where
-        F: FnMut(&Packet) -> bool,
-    {
-        while retries > 0 {
-            let incoming = (&mut self.subscriber)
-                .filter(|packet| ready(filter(packet)))
-                .timeout(Duration::from(duration))
-                .next()
-                .await;
+    pub fn system_id(&self) -> u8 {
+        self.system_id
+    }
 
-            if let Some(Ok(packet)) = incoming {
-                return Ok(packet);
-            } else {
-                retries -= 1;
-            }
-        }
-
-        Err(Error::Timeout)
+    pub fn component_id(&self) -> u8 {
+        self.component_id
     }
 }
 
