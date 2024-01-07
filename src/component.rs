@@ -1,13 +1,11 @@
+use std::time::Duration;
 use crate::{
-    dialect::{
-        MavComponent, MavMissionResult, Message, MISSION_COUNT_DATA,
-        MISSION_ITEM_DATA as RawMissionItem,
-    },
+    dialect::{MavMissionResult, Message, MISSION_COUNT_DATA },
     error::Result,
     link::Link,
     wire::Packet,
+    mission::IntoMissionItem,
 };
-use std::time::Duration;
 
 pub struct Component {
     id: u8,
@@ -16,21 +14,32 @@ pub struct Component {
 }
 
 impl Component {
-    pub fn new(component: MavComponent, system: u8, link: Link) -> Self {
-        Self {
-            id: component as u8,
-            system,
-            link,
-        }
+    pub fn new(id: u8, system: u8, link: Link) -> Self {
+        Self { id, system, link }
     }
 
-    pub async fn upload_mission(&mut self, items: &[RawMissionItem]) -> Result<MavMissionResult> {
+    pub fn id(&self) -> u8 {
+        self.id
+    }
+
+    pub fn system(&self) -> u8 {
+        self.system
+    }
+
+    pub async fn upload_mission<M, I>(
+        &mut self,
+        mission: M,
+    ) -> Result<MavMissionResult>
+        where M: AsRef<[I]>,
+              I: IntoMissionItem,
+    {
         use Message::{
-            MISSION_ACK as Ack, MISSION_ITEM as Item, MISSION_ITEM as ItemInt,
+            MISSION_ACK as Ack, MISSION_ITEM as Item, MISSION_ITEM_INT as ItemInt,
             MISSION_REQUEST as Request, MISSION_REQUEST_INT as RequestInt,
         };
 
         let filter = |p: &Packet| matches!(p.message, Request(_) | RequestInt(_) | Ack(_));
+        let items = mission.as_ref();
 
         let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
             count: items.len() as u16,
@@ -48,13 +57,17 @@ impl Component {
 
             match &packet.message {
                 Request(req) => {
-                    let seq = req.seq as usize;
-                    let mission_item = Item(items[seq].clone());
+                    let item = items[req.seq as usize]
+                        .with(self.system, self.id, req.seq);
+
+                    let mission_item = Item(item);
                     self.link.send_message(mission_item).await?;
                 }
                 RequestInt(req) => {
-                    let seq = req.seq as usize;
-                    let mission_item = ItemInt(items[seq].clone());
+                    let item = items[req.seq as usize]
+                        .with_int(self.system, self.id, req.seq);
+
+                    let mission_item = ItemInt(item);
                     self.link.send_message(mission_item).await?;
                 }
                 Ack(ack) => {

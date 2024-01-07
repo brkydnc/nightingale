@@ -1,28 +1,18 @@
-use std::{ sync::Arc, time::Duration};
-use tokio_util::codec::{Decoder, Framed};
-use tokio_serial::{SerialPortBuilderExt, SerialStream};
-use futures::stream::SplitSink;
 use futures::prelude::*;
+use futures::stream::SplitSink;
 use nightingale::{
-    link::{Link as NightingaleLink, Subscriber},
-    wire::{PacketCodec, Packet},
-    error::{Result, Error},
     dialect::{
-        Message,
-        MavType,
-        MavFrame,
-        MavAutopilot,
-        MavState,
-        MavModeFlag,
-        MavCmd,
-        MessageExt,
-        MavMissionResult,
+        MavAutopilot, MavCmd, MavFrame, MavMissionResult, MavModeFlag, MavState, MavType, Message,
+        MessageExt, COMMAND_INT_DATA, HEARTBEAT_DATA, MISSION_COUNT_DATA,
         MISSION_ITEM_INT_DATA as RawMissionItem,
-        MISSION_COUNT_DATA,
-        HEARTBEAT_DATA,
-        COMMAND_INT_DATA,
-    }
+    },
+    error::{Error, Result},
+    link::{Link as NightingaleLink, Subscriber},
+    wire::{Packet, PacketCodec},
 };
+use std::{sync::Arc, time::Duration};
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
+use tokio_util::codec::{Decoder, Framed};
 
 const GCS_SYSTEM_ID: u8 = 255;
 const GCS_COMPONENT_ID: u8 = 1;
@@ -41,56 +31,56 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let receive = tokio::spawn(receive_messages(link.subscribe()));
     let broadcast = tokio::spawn(broadcast_heartbeat(link.clone()));
 
-//     // Receive GLOBAL_POSITION_INT every  seconds
-//     set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
+    //     // Receive GLOBAL_POSITION_INT every  seconds
+    //     set_message_interval(link.clone(), 33, Duration::from_secs(1)).await;
 
-//     let planner = MissionPlanner::new()
-//         .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
-//         .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
-//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-//         .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
-//         .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
-//         .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
-//         .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
-//         .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
-//         .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
-//         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
-//         .add(MissionItem::ReturnToLaunch);
+    //     let planner = MissionPlanner::new()
+    //         .add(MissionItem::Waypoint(38.37061710, 27.20081034, 50.0))
+    //         .add(MissionItem::Takeoff(38.37061710, 27.20081034, 50.0))
+    //         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+    //         .add(MissionItem::Waypoint(38.37066650, 27.20113415, 50.0))
+    //         .add(MissionItem::Waypoint(38.37089135, 27.20093708, 50.0))
+    //         .add(MissionItem::Waypoint(38.37086087, 27.20060531, 50.0))
+    //         .add(MissionItem::Waypoint(38.37053004, 27.20043123, 50.0))
+    //         .add(MissionItem::Waypoint(38.37034030, 27.20065871, 50.0))
+    //         .add(MissionItem::Waypoint(38.37037796, 27.20098516, 50.0))
+    //         .add(MissionItem::Waypoint(38.37052632, 27.20105989, 50.0))
+    //         .add(MissionItem::ReturnToLaunch);
 
-//     let result = planner.upload(link.clone()).await?;
+    //     let result = planner.upload(link.clone()).await?;
 
-//     match result {
-//         MavMissionResult::MAV_MISSION_ACCEPTED => {
-//             eprintln!("mission accepted");
+    //     match result {
+    //         MavMissionResult::MAV_MISSION_ACCEPTED => {
+    //             eprintln!("mission accepted");
 
-//             let arm = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-//                 param1: 1.0,
-//                 param2: 0.0,
-//                 command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
-//                 target_system: TARGET_SYSTEM_ID,
-//                 target_component: TARGET_COMPONENT_ID,
-//                 ..Default::default()
-//             });
+    //             let arm = Message::COMMAND_LONG(COMMAND_LONG_DATA {
+    //                 param1: 1.0,
+    //                 param2: 0.0,
+    //                 command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+    //                 target_system: TARGET_SYSTEM_ID,
+    //                 target_component: TARGET_COMPONENT_ID,
+    //                 ..Default::default()
+    //             });
 
-//             eprintln!("armed");
+    //             eprintln!("armed");
 
-//             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, arm).await;
+    //             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, arm).await;
 
-//             let mission_start = Message::COMMAND_LONG(COMMAND_LONG_DATA {
-//                 param1: 0.0,
-//                 param2: 0.0,
-//                 command: MavCmd::MAV_CMD_MISSION_START,
-//                 target_system: TARGET_SYSTEM_ID,
-//                 target_component: TARGET_COMPONENT_ID,
-//                 ..Default::default()
-//             });
+    //             let mission_start = Message::COMMAND_LONG(COMMAND_LONG_DATA {
+    //                 param1: 0.0,
+    //                 param2: 0.0,
+    //                 command: MavCmd::MAV_CMD_MISSION_START,
+    //                 target_system: TARGET_SYSTEM_ID,
+    //                 target_component: TARGET_COMPONENT_ID,
+    //                 ..Default::default()
+    //             });
 
-//             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_start).await;
+    //             let _ = link.send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_start).await;
 
-//             eprintln!("started");
-//         },
-//         _ => { dbg!(result); },
-//     }
+    //             eprintln!("started");
+    //         },
+    //         _ => { dbg!(result); },
+    //     }
 
     let _ = tokio::join!(receive, broadcast);
 
@@ -105,7 +95,7 @@ async fn receive_messages(mut subscriber: Subscriber) {
             // Message::HEARTBEAT(_) => { eprintln!("HEARTBEAT sysid: {:?}, cmpid: {:?}", p.header.system_id, p.header.component_id) },
             // 51 | 47 => { eprintln!("{:#?}", p.message) },
             // Message::GLOBAL_POSITION_INT(pos) => { eprintln!("lat: {}, lon: {}, alt: {}", pos.lat, pos.lon, pos.alt); },
-            _ => { }
+            _ => {}
         }
     }
 }
@@ -117,7 +107,8 @@ async fn broadcast_heartbeat(link: Arc<Link>) {
             mavtype: MavType::MAV_TYPE_GCS,
             autopilot: MavAutopilot::MAV_AUTOPILOT_INVALID,
             system_status: MavState::MAV_STATE_ACTIVE,
-            base_mode: MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED | MavModeFlag::MAV_MODE_FLAG_MANUAL_INPUT_ENABLED,
+            base_mode: MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED
+                | MavModeFlag::MAV_MODE_FLAG_MANUAL_INPUT_ENABLED,
             mavlink_version: 3,
         });
 
@@ -150,7 +141,9 @@ impl MissionItem {
     fn raw(self) -> RawMissionItem {
         use MissionItem::*;
 
-        fn scale(f: f32) -> i32 { (f * 1e7) as i32 }
+        fn scale(f: f32) -> i32 {
+            (f * 1e7) as i32
+        }
 
         match self {
             Waypoint(lat, lon, alt) => RawMissionItem {
@@ -184,7 +177,7 @@ impl MissionItem {
                 target_component: TARGET_COMPONENT_ID,
                 frame: MavFrame::MAV_FRAME_MISSION,
                 ..Default::default()
-            }
+            },
         }
     }
 }
@@ -222,8 +215,7 @@ impl MissionPlanner {
             id == 51 || id == 40 || id == 47
         };
 
-        link
-            .clone()
+        link.clone()
             .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_count);
 
         let mission_result = loop {
@@ -239,22 +231,20 @@ impl MissionPlanner {
                     let data = &self.items[req.seq as usize];
                     let mission_item = Message::MISSION_ITEM_INT(data.clone());
 
-                    link
-                        .clone()
+                    link.clone()
                         .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-                },
+                }
                 Message::MISSION_REQUEST_INT(req) => {
                     // TODO: Handle invalid seq (seq < items.len());
                     let data = &self.items[req.seq as usize];
                     let mission_item = Message::MISSION_ITEM_INT(data.clone());
 
-                    link
-                        .clone()
+                    link.clone()
                         .spawn_send(GCS_SYSTEM_ID, GCS_COMPONENT_ID, mission_item);
-                },
+                }
                 Message::MISSION_ACK(ack) => {
                     break ack.mavtype;
-                },
+                }
                 _ => unreachable!(),
             }
         };
