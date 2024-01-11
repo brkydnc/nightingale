@@ -1,16 +1,18 @@
-use futures::{future, SinkExt, StreamExt};
 use nightingale::{
     component::Component,
     dialect::{
-        MavCmd, MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
-        MavResult::MAV_RESULT_ACCEPTED as Accepted, COMMAND_LONG_DATA as CommandLong,
+        MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
+        MavResult::MAV_RESULT_ACCEPTED as Accepted,
+        *
     },
     link::Link,
     mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
     wire::PacketCodec,
 };
 use tokio::net::TcpStream;
+use futures::{future, SinkExt, StreamExt};
 use tokio_util::codec::{FramedRead, FramedWrite};
+use std::time::Duration;
 
 const ADDR: &'static str = "127.0.0.1:5763";
 const GCS_SYSTEM_ID: u8 = 255;
@@ -33,11 +35,38 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Broadcast GCS hearbeat to the link.
     let broadcast = broadcast_heartbeat(link.clone());
 
+    // Receive status text messages from the drone.
+    let status = receive_status_text(link.clone());
+
     // Spawn connection and broadcast tasks.
-    let tasks = tokio::spawn(future::join(connection, broadcast));
+    let tasks = tokio::spawn(future::join3(connection, broadcast, status));
 
     // Create a component for drone's autopilot.
     let mut autopilot = Component::new(1, 1, link);
+
+    // Receive status messages (this is currently needed for wait_health_ok)
+    eprintln!("Setting SYS_STATUS message rate...");
+    match autopilot.set_message_interval(SYS_STATUS_DATA::ID, Duration::from_secs(2)).await? {
+        Accepted => eprintln!("SYS_STATUS message interval set."),
+        e => panic!("Couldn't set SYS_STATUS message interval [{e:?}], aborting..."),
+    }
+
+    // FIXME: Successful prearm checks does not mean that we can fly :(.
+
+    // Wait until the drone is armable.
+    eprintln!("Checking if the drone is armable...");
+    if autopilot.wait_armable().await {
+        eprintln!("The drone is currently armable.");
+    } else {
+        panic!("Couldn't receive armable, aborting...");
+    }
+
+    // Set mode to guided.
+    eprintln!("Setting mode to GUIDED...");
+    match autopilot.set_mode(CopterMode::COPTER_MODE_GUIDED).await? {
+        Accepted => eprintln!("GUIDED mode set."),
+        e => panic!("Couldn't set drone to GUIDED mode [{e:?}], aborting..."),
+    }
 
     let mission_items = [
         Waypoint(38.37061710, 27.20081034, 50.0),
@@ -54,47 +83,27 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     ];
 
     eprintln!("Uploading the mission...");
-    let mission_result = autopilot.upload_mission(mission_items).await?;
-
-    match mission_result {
+    match autopilot.upload_mission(mission_items).await? {
         MissionAccepted => eprintln!("The mission is accepted!"),
-        reason => panic!(
-            "The drone didn't accept the mission [{:?}], aborting..",
-            reason
-        ),
+        e => panic!("The drone didn't accept the mission [{e:?}], aborting.."),
     }
-
-    let arm = CommandLong {
-        param1: 1.0,
-        command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
-        ..Default::default()
-    };
 
     eprintln!("Arming the drone...");
-    let arm_result = autopilot.command_long(arm).await?;
-
-    match arm_result {
-        Accepted => eprintln!("The drone is armed!"),
-        reason => panic!(
-            "The drone didn't accept the command [{:?}], aborting..",
-            reason
-        ),
+    match autopilot.arm().await? {
+        Accepted => eprintln!("Arm accepted, waiting for armed..."),
+        e => panic!( "The drone didn't accept the command [{e:?}], aborting.."),
     }
 
-    let start = CommandLong {
-        command: MavCmd::MAV_CMD_MISSION_START,
-        ..Default::default()
-    };
+    if autopilot.wait_armed().await {
+        eprintln!("The drone is armed!");
+    } else {
+        eprintln!("Couldn't arm drone, aborting...");
+    }
 
     eprintln!("Starting the mission.");
-    let start_result = autopilot.command_long(start).await?;
-
-    match start_result {
+    match autopilot.start_mission().await? {
         Accepted => eprintln!("The mission has started!"),
-        reason => panic!(
-            "The drone didn't accept the command [{:?}], aborting..",
-            reason
-        ),
+        e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
     }
 
     let _ = tasks.await;
@@ -103,10 +112,6 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn broadcast_heartbeat(mut link: Link) {
-    use nightingale::dialect::{
-        MavAutopilot, MavModeFlag, MavState, MavType, Message, HEARTBEAT_DATA,
-    };
-
     loop {
         let heartbeat = Message::HEARTBEAT(HEARTBEAT_DATA {
             custom_mode: 0,
@@ -121,4 +126,16 @@ async fn broadcast_heartbeat(mut link: Link) {
         let _ = link.send(heartbeat).await;
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
+}
+
+async fn receive_status_text(link: Link) {
+    link.for_each(|packet| async move {
+        match &packet.message {
+            Message::STATUSTEXT(STATUSTEXT_DATA { severity, text }) => {
+                let content = std::str::from_utf8(text).expect("a valid utf8 string");
+                eprintln!("[STATUS_TEXT] ({severity:?}) {content}");
+            },
+            _ => {}
+        }
+    }).await;
 }

@@ -1,7 +1,8 @@
 use crate::{
     dialect::{
-        MavMissionResult, MavResult, Message, COMMAND_INT_DATA as CommandInt,
-        COMMAND_LONG_DATA as CommandLong, MISSION_COUNT_DATA,
+        COMMAND_INT_DATA as CommandInt,
+        COMMAND_LONG_DATA as CommandLong,
+        *
     },
     error::{Error, Result},
     link::Link,
@@ -93,6 +94,13 @@ impl Component {
         }
     }
 
+    pub async fn start_mission(&mut self) -> Result<MavResult> {
+        self.command_long(CommandLong {
+            command: MavCmd::MAV_CMD_MISSION_START,
+            ..Default::default()
+        }).await
+    }
+
     pub async fn upload_mission<M, I>(&mut self, mission: M) -> Result<MavMissionResult>
     where
         M: AsRef<[I]>,
@@ -138,5 +146,61 @@ impl Component {
         };
 
         Ok(mission_result)
+    }
+
+    pub async fn set_mode(&mut self, mode: CopterMode) -> Result<MavResult> {
+        self.command_long(CommandLong {
+            command: MavCmd::MAV_CMD_DO_SET_MODE,
+            param1: MavModeFlag::MAV_MODE_FLAG_CUSTOM_MODE_ENABLED.bits() as f32,
+            param2: mode as u32 as f32,
+            ..Default::default()
+        }).await
+    }
+
+    pub async fn set_message_interval(&mut self, id: MessageId, interval: Duration) -> Result<MavResult> {
+        self.command_long(CommandLong {
+            command: MavCmd::MAV_CMD_SET_MESSAGE_INTERVAL,
+            param1: id as f32,
+            param2: interval.as_micros() as f32,
+            ..Default::default()
+        }).await
+    }
+
+    pub async fn arm(&mut self) -> Result<MavResult> {
+        self.command_long(CommandLong {
+            param1: 1.0,
+            command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+            ..Default::default()
+        }).await
+    }
+
+    pub async fn wait_armable(&mut self) -> bool {
+        (&mut self.link)
+            .any(|packet| async move {
+                match &packet.message {
+                    Message::SYS_STATUS(status) => {
+                        status
+                            .onboard_control_sensors_health
+                            .contains(MavSysStatusSensor::MAV_SYS_STATUS_PREARM_CHECK)
+                    },
+                    _ => false
+                }
+            })
+            .await
+    }
+
+    pub async fn wait_armed(&mut self) -> bool {
+        (&mut self.link)
+            .any(|packet| async move {
+                match &packet.message {
+                    Message::HEARTBEAT(heartbeat) => {
+                        heartbeat
+                            .base_mode
+                            .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED)
+                    },
+                    _ => false
+                }
+            })
+            .await
     }
 }
