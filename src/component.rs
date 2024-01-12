@@ -174,6 +174,14 @@ impl Component {
         }).await
     }
 
+    pub async fn disarm(&mut self) -> Result<MavResult> {
+        self.command_long(CommandLong {
+            param1: 0.0,
+            command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
+            ..Default::default()
+        }).await
+    }
+
     pub async fn wait_armable(&mut self) -> bool {
         (&mut self.link)
             .any(|packet| async move {
