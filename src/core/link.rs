@@ -5,7 +5,7 @@ use crate::{
 };
 use async_broadcast::{self as broadcast};
 use futures::{
-    future::{join, Future},
+    future::{join, Future, FutureExt},
     Sink, Stream, StreamExt,
 };
 use std::{
@@ -28,10 +28,7 @@ impl Link {
         incoming: U,
         system_id: u8,
         component_id: u8,
-    ) -> (
-        Link,
-        impl Future<Output = (std::result::Result<(), T::Error>, ())>,
-    )
+    ) -> (Link, impl Future<Output = ()>)
     where
         T: Sink<Packet>,
         U: Stream<Item = Packet>,
@@ -67,7 +64,7 @@ impl Link {
             })
             .forward(outgoing);
 
-        let fut = join(forward, broadcast);
+        let fut = join(forward, broadcast).map(|_| ());
         let link = Link {
             sender,
             subscriber,
