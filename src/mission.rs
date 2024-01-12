@@ -69,7 +69,7 @@ impl IntoMissionItem for MissionItem {
                 y: lon,
                 z: alt,
                 autocontinue: true as u8,
-                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT,
                 ..Default::default()
             },
             Takeoff(lat, lon, alt) => RawMissionItem {
@@ -79,7 +79,7 @@ impl IntoMissionItem for MissionItem {
                 y: lon,
                 z: alt,
                 autocontinue: true as u8,
-                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                frame: MavFrame::MAV_FRAME_GLOBAL_RELATIVE_ALT,
                 ..Default::default()
             },
             ReturnToLaunch => RawMissionItem {
