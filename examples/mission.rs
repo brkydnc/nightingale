@@ -1,5 +1,4 @@
 use nightingale::{
-    component::Component,
     dialect::{
         MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
         MavResult::MAV_RESULT_ACCEPTED as Accepted,
@@ -7,30 +6,27 @@ use nightingale::{
     },
     link::Link,
     mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
-    wire::PacketCodec,
+    error::Error,
+    wire::{Packet, PacketCodec},
+    component::Component,
 };
-use tokio::net::TcpStream;
+use std::{net::SocketAddr, time::Duration, io::Error as IoError, future::Future};
+use tokio::net::UdpSocket;
+use tokio_util::udp::UdpFramed;
 use futures::{future, SinkExt, StreamExt};
-use tokio_util::codec::{FramedRead, FramedWrite};
-use std::time::Duration;
+use tokio::net::TcpStream;
+use tokio_util::codec::{FramedRead, FramedWrite, Decoder};
+use tokio_serial::SerialPortBuilderExt;
 
-const ADDR: &'static str = "127.0.0.1:5763";
 const GCS_SYSTEM_ID: u8 = 255;
 const GCS_COMPONENT_ID: u8 = 1;
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // Create a TCP connection, and split it into two halves.
-    let connection = TcpStream::connect(ADDR).await?;
-    let (reader, writer) = connection.into_split();
-
-    // Create sink & streams for the link, ignore invalid packets with filter_map.
-    let sink = FramedWrite::new(writer, PacketCodec);
-    let stream =
-        FramedRead::new(reader, PacketCodec).filter_map(|result| future::ready(result.ok()));
-
     // Create a new link.
-    let (link, connection) = Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID);
+    // let (link, connection) = udp("0.0.0.0:14550").await?;
+    let (link, connection) = serial("/dev/cu.usbserial-0001", 57600).await?;
+    // let (link, connection) = tcp("127.0.0.1:5763").await?;
 
     // Broadcast GCS hearbeat to the link.
     let broadcast = broadcast_heartbeat(link.clone());
@@ -53,19 +49,20 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     // FIXME: Successful prearm checks does not mean that we can fly :(.
 
-    // Wait until the drone is armable.
-    eprintln!("Checking if the drone is armable...");
-    if autopilot.wait_armable().await {
-        eprintln!("The drone is currently armable.");
-    } else {
-        panic!("Couldn't receive armable, aborting...");
-    }
+    // // Wait until the drone is armable.
+    // eprintln!("Waiting armable...");
+    // if autopilot.wait_armable().await {
+    //     eprintln!("The drone is currently armable.");
+    // } else {
+    //     panic!("Couldn't receive armable, aborting...");
+    // }
 
     // Set mode to guided.
-    eprintln!("Setting mode to GUIDED...");
-    match autopilot.set_mode(CopterMode::COPTER_MODE_GUIDED).await? {
-        Accepted => eprintln!("GUIDED mode set."),
-        e => panic!("Couldn't set drone to GUIDED mode [{e:?}], aborting..."),
+    let mode = CopterMode::COPTER_MODE_ACRO;
+    eprintln!("Setting mode to {mode:?}...");
+    match autopilot.set_mode(mode).await? {
+        Accepted => eprintln!("{mode:?} mode set."),
+        e => panic!("Couldn't set drone to {mode:?} mode [{e:?}], aborting..."),
     }
 
     let mission_items = [
@@ -90,25 +87,73 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Arming the drone...");
     match autopilot.arm().await? {
-        Accepted => eprintln!("Arm accepted, waiting for armed..."),
+        Accepted => eprintln!("Arm accepted."),
         e => panic!( "The drone didn't accept the command [{e:?}], aborting.."),
     }
 
+    eprintln!("Waiting for armed...");
     if autopilot.wait_armed().await {
-        eprintln!("The drone is armed!");
+        eprintln!("The drone is currently armed.");
     } else {
-        eprintln!("Couldn't arm drone, aborting...");
+        panic!("Couldn't wait for armed, aborting...");
     }
 
-    eprintln!("Starting the mission.");
-    match autopilot.start_mission().await? {
-        Accepted => eprintln!("The mission has started!"),
-        e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
-    }
+    // eprintln!("Starting the mission.");
+    // match autopilot.start_mission().await? {
+    //     Accepted => eprintln!("The mission has started!"),
+    //     e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
+    // }
 
     let _ = tasks.await;
 
     Ok(())
+}
+
+async fn udp(bind: &str) -> Result<(Link, impl Future<Output = ()>), IoError> {
+    // Create a UDP connection, and split it into two halves.
+    let socket = UdpSocket::bind(bind).await?;
+    let (sink, stream) = UdpFramed::new(socket, PacketCodec).split();
+
+    // Create a socket address from the address string.
+    let address: SocketAddr = "192.168.4.1:14555".parse().unwrap();
+
+    // Opt out addresses in sink and stream.
+    let sink = sink.with(move |packet: Packet| {
+        future::ok::<(Packet, SocketAddr), Error>((packet, address))
+    });
+
+    let stream = stream.filter_map(|result| {
+        future::ready(result.ok().map(|(packet, _)| packet))
+    });
+
+    Ok(Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID))
+}
+
+async fn tcp(address: &str) -> Result<(Link, impl Future<Output = ()>), IoError> {
+    // Create a TCP connection, and split it into two halves.
+    let connection = TcpStream::connect(address).await?;
+    let (reader, writer) = connection.into_split();
+
+    // Create sink & streams for the link, ignore invalid packets with filter_map.
+    let sink = FramedWrite::new(writer, PacketCodec);
+    let stream = FramedRead::new(reader, PacketCodec)
+        .filter_map(|result| future::ready(result.ok()));
+
+    Ok(Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID))
+}
+
+async fn serial(path: &str, baud: u32) -> Result<(Link, impl Future<Output = ()>), IoError> {
+    // dbg!(tokio_serial::available_ports());
+
+    // Create a Serial connection, and split it into two halves.
+    let port = tokio_serial::new(path, baud).open_native_async()?;
+    let (sink, stream) = PacketCodec.framed(port).split();
+
+    // Ignore invalid packets.
+    let stream = stream.filter_map(|result| future::ready(result.ok()));
+
+    // Create a new link.
+    Ok(Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID))
 }
 
 async fn broadcast_heartbeat(mut link: Link) {
