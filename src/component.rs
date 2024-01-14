@@ -15,6 +15,7 @@ use futures_time::{
 };
 use std::{sync::Arc, time::Duration};
 
+#[derive(Clone)]
 pub struct Component {
     id: u8,
     system: u8,
