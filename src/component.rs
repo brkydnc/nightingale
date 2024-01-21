@@ -9,11 +9,12 @@ use crate::{
     mission::IntoMissionItem,
     wire::Packet,
 };
-use futures::{future::ready, StreamExt};
+use std::{sync::Arc, time::Duration, pin::Pin, task::{Poll, Context}};
+use futures::{future::ready, Stream, StreamExt};
 use futures_time::{
-    stream::StreamExt as FuturesTimeStreamExt, time::Duration as FuturesTimeDuration,
+    stream::StreamExt as FuturesTimeStreamExt,
+    time::Duration as FuturesTimeDuration,
 };
-use std::{sync::Arc, time::Duration};
 
 #[derive(Clone)]
 pub struct Component {
@@ -34,13 +35,12 @@ impl Component {
         mut retries: usize,
     ) -> Result<Arc<Packet>>
     where
+        // TODO: Maybe use F: FnMut(&Packet)-> impl Future<Output = bool>,
+        // which is more flexible.
         F: FnMut(&Packet) -> bool,
     {
         while retries > 0 {
-            let incoming = (&mut self.link)
-                .filter(|p| {
-                    ready(p.header.system_id == self.system && p.header.component_id == self.id)
-                })
+            let incoming = self
                 .filter(|p| ready(filter(p)))
                 .timeout(FuturesTimeDuration::from(duration))
                 .next()
@@ -69,6 +69,7 @@ impl Component {
         self.link
             .send_message(Message::COMMAND_INT(command))
             .await?;
+
         let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
 
         match &packet.message {
@@ -87,6 +88,7 @@ impl Component {
         self.link
             .send_message(Message::COMMAND_LONG(command))
             .await?;
+
         let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
 
         match &packet.message {
@@ -184,32 +186,50 @@ impl Component {
     }
 
     pub async fn wait_armable(&mut self) -> bool {
-        (&mut self.link)
-            .any(|packet| async move {
-                match &packet.message {
-                    Message::SYS_STATUS(status) => {
-                        status
-                            .onboard_control_sensors_health
-                            .contains(MavSysStatusSensor::MAV_SYS_STATUS_PREARM_CHECK)
-                    },
-                    _ => false
-                }
-            })
-            .await
+        self.any(|packet| async move {
+            match &packet.message {
+                Message::SYS_STATUS(status) => {
+                    status
+                        .onboard_control_sensors_health
+                        .contains(MavSysStatusSensor::MAV_SYS_STATUS_PREARM_CHECK)
+                },
+                _ => false
+            }
+        }).await
     }
 
     pub async fn wait_armed(&mut self) -> bool {
-        (&mut self.link)
-            .any(|packet| async move {
-                match &packet.message {
-                    Message::HEARTBEAT(heartbeat) => {
-                        heartbeat
-                            .base_mode
-                            .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED)
-                    },
-                    _ => false
+        self.any(|packet| async move {
+            match &packet.message {
+                Message::HEARTBEAT(heartbeat) => {
+                    heartbeat
+                        .base_mode
+                        .contains(MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED)
+                },
+                _ => false
+            }
+        }) .await
+    }
+}
+
+impl Stream for Component {
+    type Item = Arc<Packet>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        let poll = Pin::new(&mut this.link).poll_next(cx);
+
+        match poll {
+            Poll::Ready(Some(packet)) => {
+                let Header { system_id, component_id, .. } = packet.header;
+
+                if system_id == this.system && component_id == this.id {
+                    Poll::Ready(Some(packet))
+                } else {
+                    Poll::Pending
                 }
-            })
-            .await
+            },
+            other => other,
+        }
     }
 }

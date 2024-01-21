@@ -25,8 +25,8 @@ const GCS_COMPONENT_ID: u8 = 1;
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create a new link.
     // let (link, connection) = udp("0.0.0.0:14550").await?;
-    let (link, connection) = serial("/dev/cu.usbserial-0001", 57600).await?;
-    // let (link, connection) = tcp("127.0.0.1:5763").await?;
+    // let (link, connection) = serial("/dev/cu.usbserial-0001", 57600).await?;
+    let (link, connection) = tcp("127.0.0.1:5763").await?;
 
     // Broadcast GCS hearbeat to the link.
     let broadcast = broadcast_heartbeat(link.clone());
