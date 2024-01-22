@@ -217,19 +217,68 @@ impl Stream for Component {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        let poll = Pin::new(&mut this.link).poll_next(cx);
 
-        match poll {
-            Poll::Ready(Some(packet)) => {
-                let Header { system_id, component_id, .. } = packet.header;
+        loop {
+            match Pin::new(&mut this.link).poll_next(cx) {
+                Poll::Ready(Some(packet)) => {
+                    let Header { system_id, component_id, .. } = packet.header;
 
-                if system_id == this.system && component_id == this.id {
-                    Poll::Ready(Some(packet))
-                } else {
-                    Poll::Pending
-                }
-            },
-            other => other,
+                    if system_id == this.system && component_id == this.id {
+                        break Poll::Ready(Some(packet))
+                    }
+                },
+                other => break other,
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test whether the component streams *only* the packets that carry its 
+    // system and component ids.
+    #[tokio::test]
+    async fn component_streams_packets() {
+        let header = Header { component_id: 1, system_id: 1, sequence: 0, };
+        let unrecognized = Header { component_id: 2, system_id: 2, sequence: 0 };
+
+        let messages = [
+            Message::HEARTBEAT(Default::default()),
+            Message::GLOBAL_POSITION_INT(Default::default()),
+            Message::SYS_STATUS(Default::default()),
+            Message::TIMESYNC(Default::default()),
+            Message::HEARTBEAT(Default::default()),
+        ];
+
+        let number_of_messages_to_be_received = messages.len() * 2;
+
+        let component_packets = messages
+            .clone()
+            .into_iter()
+            .map(|message| Packet { header, message } );
+
+        let unrecognized_component_packets = messages
+            .into_iter()
+            .map(|message| Packet { header: unrecognized, message } );
+
+        let component_packets_continued = component_packets.clone();
+
+        let packets = component_packets
+            .chain(unrecognized_component_packets)
+            .chain(component_packets_continued);
+
+        let stream = futures::stream::iter(packets);
+        let sink = futures::sink::drain();
+
+        let (link, connection) = Link::new(sink, stream, 0, 0);
+        let component = Component::new(1, 1, link);
+
+        let receive = component.count();
+
+        let (_, count) = futures::future::join(connection, receive).await;
+
+        assert_eq!(number_of_messages_to_be_received, count);
     }
 }
