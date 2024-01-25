@@ -210,6 +210,10 @@ impl Component {
             }
         }) .await
     }
+
+    pub async fn manual_control(&mut self, data: MANUAL_CONTROL_DATA) -> Result<()> {
+        self.link.send_message(Message::MANUAL_CONTROL(data)).await
+    }
 }
 
 impl Stream for Component {
