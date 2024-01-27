@@ -28,6 +28,10 @@ impl Component {
         Self { id, system, link }
     }
 
+    pub fn link(&mut self) -> &mut Link {
+        &mut self.link
+    }
+
     async fn timeout<F>(
         &mut self,
         mut filter: F,

@@ -15,10 +15,13 @@ use std::{
     task::{Context, Poll},
 };
 
+type Subscriber =broadcast::Receiver<Arc<Packet>>;
+type Sender = flume::Sender<Message>;
+
 #[derive(Clone)]
 pub struct Link {
-    subscriber: broadcast::Receiver<Arc<Packet>>,
-    sender: flume::Sender<Message>,
+    sender: Sender,
+    subscriber: Subscriber,
 }
 
 impl Link {
@@ -85,8 +88,8 @@ impl Link {
         (link, fut)
     }
 
-    pub fn split(self) -> (flume::Sender<Message>, broadcast::Receiver<Arc<Packet>>) {
-        (self.sender, self.subscriber)
+    pub fn parts(&mut self) -> (&mut Sender, &mut Subscriber) {
+        (&mut self.sender, &mut self.subscriber)
     }
 
     pub async fn send_message(&self, message: Message) -> Result<()> {
