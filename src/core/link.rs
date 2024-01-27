@@ -32,7 +32,7 @@ impl Link {
     ///
     /// The returned future will not resolve until one of the following is true:
     ///
-    /// * All `Link` instances are dropped.
+    /// * A broadcast is attempted when all `Link` instances are dropped.
     /// * The given `Sink` encounters an error *and* the `Stream` is exhausted.
     ///
     /// Notice that if the Sink encounters an error, but the `Stream` is not
