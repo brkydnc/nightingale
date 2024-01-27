@@ -17,8 +17,6 @@ use std::{
 
 #[derive(Clone)]
 pub struct Link {
-    system_id: u8,
-    component_id: u8,
     subscriber: broadcast::Receiver<Arc<Packet>>,
     sender: flume::Sender<Message>,
 }
@@ -81,22 +79,18 @@ impl Link {
             let _ = outgoing.send_all(&mut stream).await;
         };
 
-        let link = Link { sender, subscriber, system_id, component_id };
+        let link = Link { sender, subscriber };
         let fut = join(forward, broadcast).map(|_| ());
 
         (link, fut)
     }
 
+    pub fn split(self) -> (flume::Sender<Message>, broadcast::Receiver<Arc<Packet>>) {
+        (self.sender, self.subscriber)
+    }
+
     pub async fn send_message(&self, message: Message) -> Result<()> {
         self.sender.send_async(message).await.map_err(From::from)
-    }
-
-    pub fn system_id(&self) -> u8 {
-        self.system_id
-    }
-
-    pub fn component_id(&self) -> u8 {
-        self.component_id
     }
 }
 
