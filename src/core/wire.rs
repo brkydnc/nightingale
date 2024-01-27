@@ -26,13 +26,10 @@ impl Packet {
 
 impl Default for Packet {
     fn default() -> Self {
-        let header = Header {
-            system_id: 255,
-            component_id: 0,
-            sequence: 0,
-        };
-        let message = Message::HEARTBEAT(Default::default());
-        Self { header, message }
+        Self {
+            header: Default::default(),
+            message: Message::HEARTBEAT(Default::default()),
+        }
     }
 }
 

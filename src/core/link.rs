@@ -5,8 +5,9 @@ use crate::{
 };
 use async_broadcast::{self as broadcast};
 use futures::{
+    pin_mut,
     future::{join, Future, FutureExt},
-    Sink, Stream, StreamExt,
+    Sink, SinkExt, Stream, StreamExt,
 };
 use std::{
     pin::Pin,
@@ -23,6 +24,19 @@ pub struct Link {
 }
 
 impl Link {
+    /// Constructs a new `Link` for the given `Sink` and `Stream` interfaces.
+    ///
+    /// This function returns a `Link` and a future. The future must be spawned
+    /// in order to forward outgoing messages, and broadcast incoming messages
+    /// through the `Link`.
+    ///
+    /// The returned future will not resolve until one of the following is true:
+    ///
+    /// * All `Link` instances are dropped.
+    /// * The given `Sink` encounters an error *and* the `Stream` is exhausted.
+    ///
+    /// Notice that if the Sink encounters an error, but the `Stream` is not
+    /// exhausted, the future will run until the `Stream` is exhausted.
     pub fn new<T, U>(
         outgoing: T,
         incoming: U,
@@ -40,37 +54,35 @@ impl Link {
         publisher.set_overflow(true);
 
         // Broadcast each incoming message.
-        let shared = Arc::new(publisher);
-        let broadcast = incoming.for_each(move |packet| {
-            let publisher = shared.clone();
-            let packet = Arc::new(packet);
-            async move {
-                let _ = publisher.broadcast(packet).await;
+        let broadcast = async move {
+            // Pin the stream so that we can call `.next()` on it.
+            pin_mut!(incoming);
+
+            // Broadcast channel does not implement `Sink`, so instead of forwarding,
+            // we somehow need to publish incoming packets, This is why we loop.
+            while let Some(packet) = incoming.as_mut().map(Arc::new).next().await {
+                if let Err(_) = publisher.broadcast_direct(packet).await {
+                    // Publish packets, stop if all receivers are dropped.
+                    break;
+                }
             }
-        });
-
-        // Stamp packets with a sequence number, and forward them to the sink.
-        let mut sequence = 0;
-        let forward = receiver
-            .into_stream()
-            .map(move |message| {
-                let header = Header {
-                    component_id,
-                    system_id,
-                    sequence,
-                };
-                sequence += 1;
-                Ok(Packet { header, message })
-            })
-            .forward(outgoing);
-
-        let fut = join(forward, broadcast).map(|_| ());
-        let link = Link {
-            sender,
-            subscriber,
-            system_id,
-            component_id,
         };
+
+        let forward = async move {
+            let mut header = Header { component_id, system_id, sequence: 255 };
+            let mut stream = receiver.into_stream().map(move |message| {
+                header.sequence = header.sequence.wrapping_add(1);
+                Ok(Packet { header, message })
+            });
+
+            // Forward all packets in stream. Do not care how the "forwarding"
+            // process ended, whether it is a `Sink::Error` or a `Stream` exhaust.
+            pin_mut!(outgoing);
+            let _ = outgoing.send_all(&mut stream).await;
+        };
+
+        let link = Link { sender, subscriber, system_id, component_id };
+        let fut = join(forward, broadcast).map(|_| ());
 
         (link, fut)
     }
@@ -134,4 +146,30 @@ impl Stream for Link {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.get_mut().subscriber).poll_next(cx)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::task::Context;
+
+    #[test]
+    fn link_future_resolves_when_all_links_are_dropped() {
+        let sink = futures::sink::drain();
+        let stream = futures::stream::repeat(Default::default());
+        let (link, fut) = Link::new(sink, stream, 0, 0);
+
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        drop(link);
+
+        pin_mut!(fut);
+        match fut.poll(&mut context) {
+            Poll::Ready(_) => { },
+            Poll::Pending => unreachable!(),
+        }
+    }
+
+    // TODO: Test the case where sink and stream end, and the future is resolved.
 }
