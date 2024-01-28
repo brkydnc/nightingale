@@ -9,12 +9,22 @@ use crate::{
     mission::IntoMissionItem,
     wire::Packet,
 };
-use std::{sync::Arc, time::Duration, pin::Pin, task::{Poll, Context}};
+
+use std::{
+    sync::Arc,
+    time::Duration,
+    result::Result as StdResult,
+    pin::Pin,
+    task::{Poll, Context}
+};
+
 use futures::{future::ready, Stream, StreamExt};
 use futures_time::{
     stream::StreamExt as FuturesTimeStreamExt,
     time::Duration as FuturesTimeDuration,
 };
+
+pub use async_broadcast::TryRecvError;
 
 #[derive(Clone)]
 pub struct Component {
@@ -28,8 +38,15 @@ impl Component {
         Self { id, system, link }
     }
 
-    pub fn link(&mut self) -> &mut Link {
-        &mut self.link
+    pub fn try_recv(&mut self) -> StdResult<Arc<Packet>, TryRecvError> {
+        loop {
+            let packet = self.link.subscriber.try_recv()?;
+            let Header { system_id, component_id, .. } = packet.header;
+
+            if system_id == self.system && component_id == self.id {
+                break Ok(packet)
+            }
+        }
     }
 
     async fn timeout<F>(

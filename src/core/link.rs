@@ -13,13 +13,12 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
-    result::Result as StdResult
 };
 
 #[derive(Clone)]
 pub struct Link {
     sender: flume::Sender<Message>,
-    subscriber: broadcast::Receiver<Arc<Packet>>,
+    pub(crate) subscriber: broadcast::Receiver<Arc<Packet>>,
 }
 
 impl Link {
@@ -86,10 +85,6 @@ impl Link {
         (link, fut)
     }
 
-    pub fn subscriber(&mut self) -> Subscriber {
-        Subscriber(&mut self.subscriber)
-    }
-
     pub async fn send_message(&self, message: Message) -> Result<()> {
         self.sender.send_async(message).await.map_err(From::from)
     }
@@ -140,32 +135,6 @@ impl Stream for Link {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.get_mut().subscriber).poll_next(cx)
-    }
-}
-
-/// A future-proof TryRecvError type.
-pub enum TryRecvError {
-    Overflowed(u64),
-    Empty,
-    Closed
-}
-
-impl From<broadcast::TryRecvError> for TryRecvError {
-    fn from(error: broadcast::TryRecvError) -> Self {
-        match error {
-            broadcast::TryRecvError::Closed => TryRecvError::Closed,
-            broadcast::TryRecvError::Empty => TryRecvError::Empty,
-            broadcast::TryRecvError::Overflowed(n) => TryRecvError::Overflowed(n),
-        }
-    }
-}
-
-/// A future-proof Subscriber type.
-pub struct Subscriber<'a>(&'a mut broadcast::Receiver<Arc<Packet>>);
-
-impl Subscriber<'_> {
-    pub fn try_recv(&mut self) -> StdResult<Arc<Packet>, TryRecvError> {
-        self.0.try_recv().map_err(From::from)
     }
 }
 
