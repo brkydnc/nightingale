@@ -142,6 +142,7 @@ impl Component {
             count: items.len() as u16,
             target_system: self.system,
             target_component: self.id,
+            mission_type: MavMissionType::MAV_MISSION_TYPE_MISSION,
         });
 
         self.link.send_message(mission_count).await?;
