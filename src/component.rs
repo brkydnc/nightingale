@@ -191,17 +191,9 @@ impl Component {
         }).await
     }
 
-    pub async fn arm(&mut self) -> Result<MavResult> {
+    pub async fn arm(&mut self, armed: bool) -> Result<MavResult> {
         self.command_long(CommandLong {
-            param1: 1.0,
-            command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
-            ..Default::default()
-        }).await
-    }
-
-    pub async fn disarm(&mut self) -> Result<MavResult> {
-        self.command_long(CommandLong {
-            param1: 0.0,
+            param1: armed as u8 as f32,
             command: MavCmd::MAV_CMD_COMPONENT_ARM_DISARM,
             ..Default::default()
         }).await
