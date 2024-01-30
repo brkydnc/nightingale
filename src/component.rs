@@ -18,13 +18,18 @@ use std::{
     task::{Poll, Context}
 };
 
-use futures::{future::ready, Stream, StreamExt};
+use futures::{pin_mut, future::{Future, Ready, ready}, Stream, StreamExt};
 use futures_time::{
     stream::StreamExt as FuturesTimeStreamExt,
     time::Duration as FuturesTimeDuration,
 };
 
 pub use async_broadcast::TryRecvError;
+
+const MAX_RETRY: usize = 5;
+const MAX_CONFIRMATION: u8 = 5;
+const ACK_TIMEOUT: Duration = Duration::from_millis(1500);
+const LONG_TIMEOUT: Duration = Duration::from_millis(6000);
 
 #[derive(Clone)]
 pub struct Component {
@@ -49,73 +54,84 @@ impl Component {
         }
     }
 
-    async fn timeout<F>(
-        &mut self,
-        mut filter: F,
-        duration: Duration,
-        mut retries: usize,
-    ) -> Result<Arc<Packet>>
-    where
-        // TODO: Maybe use F: FnMut(&Packet)-> impl Future<Output = bool>,
-        // which is more flexible.
-        F: FnMut(&Packet) -> bool,
+    async fn _timeout<T, F, Fut>(&mut self, f: F, dur: Duration) -> Result<T>
+    where F: FnMut(Arc<Packet>)-> Fut,
+          Fut: Future<Output = Option<T>>
     {
-        while retries > 0 {
-            let incoming = self
-                .filter(|p| ready(filter(p)))
-                .timeout(FuturesTimeDuration::from(duration))
-                .next()
-                .await;
+        let fut = self
+            .filter_map(f)
+            .timeout(FuturesTimeDuration::from(dur));
 
-            if let Some(Ok(packet)) = incoming {
-                return Ok(packet);
-            } else {
-                retries -= 1;
+        pin_mut!(fut);
+
+        fut
+            .next()
+            .await
+            .ok_or(Error::Closed)?
+            .or(Err(Error::Timeout))
+    }
+
+    async fn probe<T, F, Fut>(&mut self, mut f: F, dur: Duration, mut retry: usize) -> Result<T>
+    where F: FnMut(Arc<Packet>)-> Fut,
+          Fut: Future<Output = Option<T>>
+    {
+        while retry > 0 {
+            match self._timeout(&mut f, dur).await {
+                Err(Error::Timeout) => { retry -= 1 },
+                other => return other,
             }
         }
 
         Err(Error::Timeout)
     }
 
-    // TODO: Check command.ack.command == command.
     // TODO: We need packet routing (target system id matches, blah blah).
-    // XXX: COMMAND_ACK_DATA Does not include target_system unless it has
-    //      serde feature flag.
     pub async fn command_int(&mut self, mut command: CommandInt) -> Result<MavResult> {
         command.target_system = self.system;
         command.target_component = self.id;
 
-        let filter = |packet: &Packet| matches!(packet.message, Message::COMMAND_ACK(_));
+        let ref filter = ack_filter(command.command);
 
-        self.link
-            .send_message(Message::COMMAND_INT(command))
-            .await?;
-
-        let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
-
-        match &packet.message {
-            Message::COMMAND_ACK(ack) => Ok(ack.result),
-            _ => unreachable!(),
-        }
+        self.link.send_message(Message::COMMAND_INT(command)).await?;
+        self.probe(filter, ACK_TIMEOUT, MAX_RETRY).await
     }
 
-    // TODO: Currently, this is how command_int works, implement long command protocol here.
+    // TODO: We need packet routing (target system id matches, blah blah).
     pub async fn command_long(&mut self, mut command: CommandLong) -> Result<MavResult> {
+        // Slap the target address.
         command.target_system = self.system;
         command.target_component = self.id;
 
-        let filter = |packet: &Packet| matches!(packet.message, Message::COMMAND_ACK(_));
+        // Create a filter for ack commands that will catch the current command.
+        let ref filter = ack_filter(command.command);
+        let message = Message::COMMAND_LONG(command);
+        let mut confirmation = 0;
 
-        self.link
-            .send_message(Message::COMMAND_LONG(command))
-            .await?;
+        // Send command with increasing confirmation until we receive an ACK.
+        while confirmation < MAX_CONFIRMATION {
+            // Send the command.
+            self.link.send_message(message.clone()).await?;
 
-        let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
+            // Wait for an ack, timeout after a certain time.
+            match self._timeout(filter, ACK_TIMEOUT).await {
+                // When we receive a progress, we will wait for an ending ack.
+                Ok(MavResult::MAV_RESULT_IN_PROGRESS) => loop {
+                    match self._timeout(filter, LONG_TIMEOUT).await {
+                        Ok(MavResult::MAV_RESULT_IN_PROGRESS) => { }
+                        other => return other,
+                    }
+                }
 
-        match &packet.message {
-            Message::COMMAND_ACK(ack) => Ok(ack.result),
-            _ => unreachable!(),
+                // If timed out, increased the confirmation field and retry.
+                Err(Error::Timeout) => { confirmation += 1 }
+
+                // Return what we received, this can be an error.
+                other => return other,
+            }
         }
+
+        // Fallback for maximum number of confirmations.
+        Err(Error::Timeout)
     }
 
     pub async fn start_mission(&mut self) -> Result<MavResult> {
@@ -130,12 +146,6 @@ impl Component {
         M: AsRef<[I]>,
         I: IntoMissionItem,
     {
-        use Message::{
-            MISSION_ACK as Ack, MISSION_ITEM as Item, MISSION_ITEM_INT as ItemInt,
-            MISSION_REQUEST as Request, MISSION_REQUEST_INT as RequestInt,
-        };
-
-        let filter = |p: &Packet| matches!(p.message, Request(_) | RequestInt(_) | Ack(_));
         let items = mission.as_ref();
 
         let mission_count = Message::MISSION_COUNT(MISSION_COUNT_DATA {
@@ -148,22 +158,22 @@ impl Component {
         self.link.send_message(mission_count).await?;
 
         let mission_result = loop {
-            let packet = self.timeout(filter, Duration::from_millis(1500), 5).await?;
+            let packet = self.probe(mission_filter, ACK_TIMEOUT, MAX_RETRY).await?;
 
             match &packet.message {
-                Request(req) => {
+                Message::MISSION_REQUEST(req) => {
                     let item = items[req.seq as usize].with(self.system, self.id, req.seq);
 
-                    let mission_item = Item(item);
+                    let mission_item = Message::MISSION_ITEM(item);
                     self.link.send_message(mission_item).await?;
                 }
-                RequestInt(req) => {
+                Message::MISSION_REQUEST_INT(req) => {
                     let item = items[req.seq as usize].with_int(self.system, self.id, req.seq);
 
-                    let mission_item = ItemInt(item);
+                    let mission_item = Message::MISSION_ITEM_INT(item);
                     self.link.send_message(mission_item).await?;
                 }
-                Ack(ack) => {
+                Message::MISSION_ACK(ack) => {
                     break ack.mavtype;
                 }
                 _ => unreachable!(),
@@ -247,6 +257,29 @@ impl Stream for Component {
                 },
                 other => break other,
             }
+        }
+    }
+}
+
+fn mission_filter(packet: Arc<Packet>) -> Ready<Option<Arc<Packet>>> {
+    use Message::{
+        MISSION_ACK as Ack,
+        MISSION_REQUEST as Request,
+        MISSION_REQUEST_INT as RequestInt,
+    };
+
+    match &packet.message {
+        Request(_) | RequestInt(_) | Ack(_) => ready(Some(packet)),
+        _ => ready(None)
+    }
+}
+
+fn ack_filter(command: MavCmd) -> impl Fn(Arc<Packet>) -> Ready<Option<MavResult>> {
+    move |packet| {
+        if let Message::COMMAND_ACK(ack) = &packet.message {
+            ready(command.eq(&ack.command).then_some(ack.result))
+        } else {
+            ready(None)
         }
     }
 }

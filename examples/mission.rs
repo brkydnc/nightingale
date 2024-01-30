@@ -86,7 +86,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!("Arming the drone...");
-    match autopilot.arm().await? {
+    match autopilot.arm(true).await? {
         Accepted => eprintln!("Arm accepted."),
         e => panic!( "The drone didn't accept the command [{e:?}], aborting.."),
     }
@@ -98,17 +98,18 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         panic!("Couldn't wait for armed, aborting...");
     }
 
-    // eprintln!("Starting the mission.");
-    // match autopilot.start_mission().await? {
-    //     Accepted => eprintln!("The mission has started!"),
-    //     e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
-    // }
+    eprintln!("Starting the mission.");
+    match autopilot.start_mission().await? {
+        Accepted => eprintln!("The mission has started!"),
+        e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
+    }
 
     let _ = tasks.await;
 
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn udp(bind: &str) -> Result<(Link, impl Future<Output = ()>), IoError> {
     // Create a UDP connection, and split it into two halves.
     let socket = UdpSocket::bind(bind).await?;
@@ -129,6 +130,7 @@ async fn udp(bind: &str) -> Result<(Link, impl Future<Output = ()>), IoError> {
     Ok(Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID))
 }
 
+#[allow(dead_code)]
 async fn tcp(address: &str) -> Result<(Link, impl Future<Output = ()>), IoError> {
     // Create a TCP connection, and split it into two halves.
     let connection = TcpStream::connect(address).await?;
@@ -142,6 +144,7 @@ async fn tcp(address: &str) -> Result<(Link, impl Future<Output = ()>), IoError>
     Ok(Link::new(sink, stream, GCS_SYSTEM_ID, GCS_COMPONENT_ID))
 }
 
+#[allow(dead_code)]
 async fn serial(path: &str, baud: u32) -> Result<(Link, impl Future<Output = ()>), IoError> {
     // dbg!(tokio_serial::available_ports());
 
@@ -176,7 +179,7 @@ async fn broadcast_heartbeat(mut link: Link) {
 async fn receive_status_text(link: Link) {
     link.for_each(|packet| async move {
         match &packet.message {
-            Message::STATUSTEXT(STATUSTEXT_DATA { severity, text }) => {
+            Message::STATUSTEXT(STATUSTEXT_DATA { severity, text, .. }) => {
                 let content = std::str::from_utf8(text).expect("a valid utf8 string");
                 eprintln!("[STATUS_TEXT] ({severity:?}) {content}");
             },

@@ -4,10 +4,12 @@ use std::io::Error as IoError;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     Io(IoError),
     Send,
     Timeout,
+    Closed,
 }
 
 impl std::error::Error for Error {}
