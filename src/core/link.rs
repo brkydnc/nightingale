@@ -4,7 +4,7 @@ use crate::{
     error::{Error, Result},
     wire::Packet,
 };
-use futures::{
+use futures_util::{
     pin_mut,
     future::{join, Future, FutureExt},
     Sink, SinkExt, Stream, StreamExt,

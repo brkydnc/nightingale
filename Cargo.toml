@@ -9,9 +9,9 @@ edition = "2021"
 async-broadcast = "0.6.0"
 crc16 = "0.4.0"
 flume = "0.11.0"
-futures = "0.3.29"
+futures-util = { version = "0.3.30", features = ["sink"] }
 futures-time = "3.0.0"
-mavlink = { version = "0.12.0", features = ["ardupilotmega", "emit-extensions"]}
+mavlink = { version = "0.12.0", default-features = false, features = ["std", "ardupilotmega", "emit-extensions"] }
 tokio-util = { version = "0.7.10", features = ["codec"] }
 
 [dev-dependencies]

@@ -18,7 +18,7 @@ use std::{
     task::{Poll, Context}
 };
 
-use futures::{pin_mut, future::{Future, Ready, ready}, Stream, StreamExt};
+use futures_util::{pin_mut, future::{Future, Ready, ready}, Stream, StreamExt};
 use futures_time::{
     stream::StreamExt as FuturesTimeStreamExt,
     time::Duration as FuturesTimeDuration,
