@@ -235,7 +235,8 @@ impl Component {
         }) .await
     }
 
-    pub async fn manual_control(&mut self, data: MANUAL_CONTROL_DATA) -> Result<()> {
+    pub async fn manual_control(&mut self, mut data: MANUAL_CONTROL_DATA) -> Result<()> {
+        data.target = self.system;
         self.link.send_message(Message::MANUAL_CONTROL(data)).await
     }
 }
