@@ -1,11 +1,9 @@
 use nightingale::{
     dialect::{
-        MavMissionResult::MAV_MISSION_ACCEPTED as MissionAccepted,
         MavResult::MAV_RESULT_ACCEPTED as Accepted,
         *
     },
     link::Link,
-    mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
     error::Error,
     wire::{Packet, PacketCodec},
     component::Component,
@@ -40,68 +38,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create a component for drone's autopilot.
     let mut autopilot = Component::new(1, 1, link);
 
-    // Receive status messages (this is currently needed for wait_health_ok)
-    eprintln!("Setting SYS_STATUS message rate...");
-    match autopilot.set_message_interval(SYS_STATUS_DATA::ID, Duration::from_secs(2)).await? {
-        Accepted => eprintln!("SYS_STATUS message interval set."),
-        e => panic!("Couldn't set SYS_STATUS message interval [{e:?}], aborting..."),
-    }
-
-    // FIXME: Successful prearm checks does not mean that we can fly :(.
-
-    // // Wait until the drone is armable.
-    // eprintln!("Waiting armable...");
-    // if autopilot.wait_armable().await {
-    //     eprintln!("The drone is currently armable.");
-    // } else {
-    //     panic!("Couldn't receive armable, aborting...");
-    // }
-
-    // Set mode to guided.
-    let mode = CopterMode::COPTER_MODE_ACRO;
-    eprintln!("Setting mode to {mode:?}...");
-    match autopilot.set_mode(mode).await? {
-        Accepted => eprintln!("{mode:?} mode set."),
-        e => panic!("Couldn't set drone to {mode:?} mode [{e:?}], aborting..."),
-    }
-
-    let mission_items = [
-        Waypoint(38.37061710, 27.20081034, 50.0),
-        Takeoff(38.37061710, 27.20081034, 50.0),
-        Waypoint(38.37052632, 27.20105989, 50.0),
-        Waypoint(38.37066650, 27.20113415, 50.0),
-        Waypoint(38.37089135, 27.20093708, 50.0),
-        Waypoint(38.37086087, 27.20060531, 50.0),
-        Waypoint(38.37053004, 27.20043123, 50.0),
-        Waypoint(38.37034030, 27.20065871, 50.0),
-        Waypoint(38.37037796, 27.20098516, 50.0),
-        Waypoint(38.37052632, 27.20105989, 50.0),
-        ReturnToLaunch,
-    ];
-
-    eprintln!("Uploading the mission...");
-    match autopilot.upload_mission(mission_items).await? {
-        MissionAccepted => eprintln!("The mission is accepted!"),
-        e => panic!("The drone didn't accept the mission [{e:?}], aborting.."),
-    }
-
-    eprintln!("Arming the drone...");
-    match autopilot.arm(true).await? {
-        Accepted => eprintln!("Arm accepted."),
-        e => panic!( "The drone didn't accept the command [{e:?}], aborting.."),
-    }
-
-    eprintln!("Waiting for armed...");
-    if autopilot.wait_armed().await {
-        eprintln!("The drone is currently armed.");
-    } else {
-        panic!("Couldn't wait for armed, aborting...");
-    }
-
-    eprintln!("Starting the mission.");
-    match autopilot.start_mission().await? {
-        Accepted => eprintln!("The mission has started!"),
-        e => panic!("The drone didn't accept the command [{e:?}], aborting.."),
+    eprintln!("Setting AUTOPILOT_VERSION message rate...");
+    match autopilot.set_message_interval(AUTOPILOT_VERSION_DATA::ID, Duration::from_secs(1)).await? {
+        Accepted => eprintln!("AUTOPILOT_VERSION message interval set."),
+        e => panic!("Couldn't set AUTOPILOT_VERSION message interval [{e:?}], aborting..."),
     }
 
     let _ = tasks.await;
@@ -183,7 +123,10 @@ async fn receive_status_text(link: Link) {
                 let content = std::str::from_utf8(text).expect("a valid utf8 string");
                 eprintln!("[STATUS_TEXT] ({severity:?}) {content}");
             },
-            _ => {}
+            Message::AUTOPILOT_VERSION(data) => {
+                eprintln!("{:#?}", data);
+            },
+            _ => {},
         }
     }).await;
 }
