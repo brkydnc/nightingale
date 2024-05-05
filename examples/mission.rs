@@ -5,7 +5,7 @@ use nightingale::{
         *
     },
     link::Link,
-    mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint},
+    mission::MissionItem::{ReturnToLaunch, Takeoff, Waypoint, DoChangeSpeed},
     error::Error,
     wire::{Packet, PacketCodec},
     component::Component,
@@ -25,8 +25,8 @@ const GCS_COMPONENT_ID: u8 = 1;
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     // Create a new link.
     // let (link, connection) = udp("0.0.0.0:14550").await?;
-    let (link, connection) = serial("/dev/cu.usbserial-0001", 57600).await?;
-    // let (link, connection) = tcp("127.0.0.1:5763").await?;
+    // let (link, connection) = serial("/dev/cu.usbserial-0001", 57600).await?;
+    let (link, connection) = tcp("127.0.0.1:5763").await?;
 
     // Broadcast GCS hearbeat to the link.
     let broadcast = broadcast_heartbeat(link.clone());
@@ -66,16 +66,17 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     let mission_items = [
-        Waypoint(38.37061710, 27.20081034, 50.0),
-        Takeoff(38.37061710, 27.20081034, 50.0),
-        Waypoint(38.37052632, 27.20105989, 50.0),
-        Waypoint(38.37066650, 27.20113415, 50.0),
-        Waypoint(38.37089135, 27.20093708, 50.0),
-        Waypoint(38.37086087, 27.20060531, 50.0),
-        Waypoint(38.37053004, 27.20043123, 50.0),
-        Waypoint(38.37034030, 27.20065871, 50.0),
-        Waypoint(38.37037796, 27.20098516, 50.0),
-        Waypoint(38.37052632, 27.20105989, 50.0),
+        Waypoint(38.37061710, 27.20081034, 5.0),
+        DoChangeSpeed,
+        Takeoff(38.37061710, 27.20081034,  5.0),
+        Waypoint(38.37052632, 27.20105989, 5.0),
+        Waypoint(38.37066650, 27.20113415, 5.0),
+        Waypoint(38.37089135, 27.20093708, 5.0),
+        Waypoint(38.37086087, 27.20060531, 5.0),
+        Waypoint(38.37053004, 27.20043123, 5.0),
+        Waypoint(38.37034030, 27.20065871, 5.0),
+        Waypoint(38.37037796, 27.20098516, 5.0),
+        Waypoint(38.37052632, 27.20105989, 5.0),
         ReturnToLaunch,
     ];
 

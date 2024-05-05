@@ -55,6 +55,7 @@ pub enum MissionItem {
     Waypoint(f32, f32, f32),
     Takeoff(f32, f32, f32),
     ReturnToLaunch,
+    DoChangeSpeed,
 }
 
 impl IntoMissionItem for MissionItem {
@@ -86,6 +87,13 @@ impl IntoMissionItem for MissionItem {
                 command: MavCmd::MAV_CMD_NAV_RETURN_TO_LAUNCH,
                 autocontinue: true as u8,
                 frame: MavFrame::MAV_FRAME_MISSION,
+                ..Default::default()
+            },
+            DoChangeSpeed => RawMissionItem {
+                command: MavCmd::MAV_CMD_DO_CHANGE_SPEED,
+                param1: 0.0,
+                param2: 0.8,
+                param3: -2.0,
                 ..Default::default()
             },
         }
